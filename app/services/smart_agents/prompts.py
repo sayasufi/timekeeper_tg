@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from typing import Any
@@ -76,6 +76,7 @@ def build_intent_prompt(
         "23) 'цель Маши ЕГЭ, уровень B1, 2 раза в неделю' -> update_student(goal, level, weekly_frequency).\n"
         "24) 'добавь ученика Маша, цена 2500' -> create_student.\n"
         "25) 'удали ученика Ивана и его будущие уроки' -> delete_student(delete_future_lessons=true).\n"
+        "26) 'поставь часовой пояс Москва' / 'часовой пояс Europe/Moscow' / 'хочу московское время' -> update_settings(timezone).\n"
         f"Локаль: {locale}. Таймзона: {timezone}."
         f"{_memory_block(user_memory)}\n"
         f"Текст пользователя: {text}"
@@ -118,6 +119,7 @@ def build_command_prompt(
         "13) Для массовых операций расписания используй apply_to_all/shift_* или bulk_cancel_*.\n"
         "14) Для update_student поддерживай CRM поля: status(active|paused|left), goal, level, weekly_frequency, preferred_slots.\n"
         "15) Для create_student и delete_student обязательно передавай student_name.\n"
+        "16) Для update_settings при смене часового пояса передавай timezone в формате IANA (Europe/Moscow, Asia/Almaty и т.д.). Примеры: 'Москва' -> Europe/Moscow, 'Алматы' -> Asia/Almaty.\n"
         f"Локаль: {locale}. Таймзона: {timezone}. Intent: {intent}."
         f"{_memory_block(user_memory)}\n"
         f"Schema: {json.dumps(schema, ensure_ascii=False)}\n"
