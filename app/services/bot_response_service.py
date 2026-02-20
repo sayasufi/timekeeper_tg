@@ -9,7 +9,7 @@ from app.services.smart_agents import BotReplyAgent, TelegramFormattingAgent, Us
 
 
 class BotResponseService:
-    _NO_FORMAT_KINDS: ClassVar[frozenset[str]] = frozenset({"button_label"})
+    _NO_FORMAT_KINDS: ClassVar[frozenset[str]] = frozenset({"button_label", "reminder_notification"})
 
     def __init__(self, llm_client: LLMClient, min_confidence: float = 0.6) -> None:
         self._agent = BotReplyAgent(llm_client)
@@ -45,21 +45,28 @@ class BotResponseService:
         user_text: str | None = None,
         user_memory: dict[str, object] | None = None,
     ) -> str:
-        try:
-            rendered = await self._agent.render(
-                raw_text=raw_text,
-                user_text=user_text,
-                locale=locale,
-                timezone=timezone,
-                response_kind=response_kind,
-                user_memory=user_memory,
-            )
-        except Exception:
-            return self._safe_plain(raw_text, response_kind=response_kind)
+        # Обход LLM для системных подтверждений с датами — избегаем искажения дат
+        if response_kind == "regular_reply" and raw_text.startswith("Напоминание создано:"):
+            text = raw_text.strip()
+        elif response_kind == "reminder_notification":
+            # Готовый HTML-формат из ReminderDispatchService
+            text = raw_text.strip()
+        else:
+            try:
+                rendered = await self._agent.render(
+                    raw_text=raw_text,
+                    user_text=user_text,
+                    locale=locale,
+                    timezone=timezone,
+                    response_kind=response_kind,
+                    user_memory=user_memory,
+                )
+            except Exception:
+                return self._safe_plain(raw_text, response_kind=response_kind)
 
-        text = (rendered.text or "").strip()
-        if rendered.confidence < self._min_confidence or not text:
-            text = raw_text
+            text = (rendered.text or "").strip()
+            if rendered.confidence < self._min_confidence or not text:
+                text = raw_text
 
         if response_kind in self._NO_FORMAT_KINDS:
             return text

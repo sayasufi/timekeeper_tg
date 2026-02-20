@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from io import BytesIO
 from uuid import UUID
@@ -267,62 +267,6 @@ async def confirm_callback(callback: CallbackQuery, container: AppContainer, ses
         response_kind="callback_ok",
         show_alert=False,
     )
-
-
-@router.callback_query(F.data.startswith("snooze:"))
-async def snooze_callback(callback: CallbackQuery, container: AppContainer, session: AsyncSession) -> None:
-    if callback.from_user is None or callback.data is None:
-        return
-    if not await _register_callback_once(callback, container):
-        return
-
-    parts = callback.data.split(":")
-    if len(parts) != 3:
-        await _answer_callback_notice(
-            callback=callback,
-            container=container,
-            session=session,
-            raw_text="Некорректные данные snooze",
-            response_kind="callback_error",
-            show_alert=True,
-        )
-        return
-
-    try:
-        minutes = int(parts[1])
-        event_id = UUID(parts[2])
-    except ValueError:
-        await _answer_callback_notice(
-            callback=callback,
-            container=container,
-            session=session,
-            raw_text="Некорректные данные snooze",
-            response_kind="callback_error",
-            show_alert=True,
-        )
-        return
-
-    user_repo = UserRepository(session)
-    user = await user_repo.get_or_create(callback.from_user.id, language=callback.from_user.language_code or "ru")
-    event_service = _build_event_service(session, container=container)
-    text = await event_service.snooze_event(user=user, event_id=event_id, minutes=minutes)
-    text = await container.create_bot_response_service().render_for_user(
-        user=user,
-        raw_text=text,
-        response_kind="snooze_result",
-    )
-    await session.commit()
-    await _answer_callback_notice(
-        callback=callback,
-        container=container,
-        session=session,
-        raw_text="Snooze поставлен",
-        response_kind="callback_ok",
-        show_alert=False,
-    )
-    callback_message = callback.message
-    if callback_message is not None and not isinstance(callback_message, InaccessibleMessage):
-        await callback_message.answer(text)
 
 
 @router.callback_query(F.data.startswith("qa:"))

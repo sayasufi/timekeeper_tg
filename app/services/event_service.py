@@ -874,27 +874,6 @@ class EventService:
             allowed_types=allowed_types,
         )
 
-    async def snooze_event(self, user: User, event_id: UUID, minutes: int) -> str:
-        event = await self._events.get_for_user(user_id=user.id, event_id=event_id)
-        if event is None or not event.is_active:
-            return "Событие для snooze не найдено."
-        snoozed_at = datetime.now(tz=UTC) + timedelta(minutes=minutes)
-        snooze_event = Event(
-            user_id=user.id,
-            event_type=EventType.REMINDER.value,
-            title=f"Snooze: {event.title}",
-            description=f"Автосоздано из события {event.id}",
-            starts_at=snoozed_at,
-            ends_at=None,
-            rrule=None,
-            remind_offsets=[0],
-            extra_data={"source_event_id": str(event.id)},
-        )
-        await self._events.create(snooze_event)
-        await self._sync_due_index(snooze_event)
-        await self._touch_schedule_cache(user.id)
-        return f"Ок, напомню через {minutes} минут."
-
     async def cancel_lesson(self, user: User, event_id: UUID, canceled_by: str = "tutor") -> str:
         event = await self._events.get_for_user(user_id=user.id, event_id=event_id)
         if event is None or event.event_type != EventType.LESSON.value:

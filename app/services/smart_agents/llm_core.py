@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from time import perf_counter
 from typing import Any
@@ -48,6 +48,20 @@ from app.services.smart_agents.prompts import (
 
 logger = structlog.get_logger(__name__)
 
+_AGENT_IO_LOG_CHARS = 1200  # сколько символов логировать с хвоста промпта и начала ответа
+
+
+def _truncate_tail(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return "..." + text[-max_chars:]
+
+
+def _truncate_head(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "..."
+
 
 class BaseLLMAgent:
     def __init__(self, llm_client: LLMClient) -> None:
@@ -55,7 +69,12 @@ class BaseLLMAgent:
 
     async def _complete(self, prompt: str, *, stage: str) -> str:
         started = perf_counter()
-        logger.info("agent.llm_request_started", stage=stage, prompt_len=len(prompt))
+        logger.info(
+            "agent.llm_request_started",
+            stage=stage,
+            prompt_len=len(prompt),
+            prompt_tail=_truncate_tail(prompt, _AGENT_IO_LOG_CHARS),
+        )
         try:
             response = await self._llm_client.complete(prompt)
         except Exception:
@@ -66,6 +85,7 @@ class BaseLLMAgent:
             stage=stage,
             duration_ms=int((perf_counter() - started) * 1000),
             response_len=len(response),
+            response_head=_truncate_head(response, _AGENT_IO_LOG_CHARS),
         )
         return response
 

@@ -1,6 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime, timedelta
+from html import escape
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -103,20 +104,7 @@ class ReminderDispatchService:
                         },
                     ]
                 else:
-                    buttons = [
-                        {
-                            "title": await self._render_button_label(user, "Через 10 мин"),
-                            "callback_data": f"snooze:10:{event.id}",
-                        },
-                        {
-                            "title": await self._render_button_label(user, "Через 30 мин"),
-                            "callback_data": f"snooze:30:{event.id}",
-                        },
-                        {
-                            "title": await self._render_button_label(user, "Через 60 мин"),
-                            "callback_data": f"snooze:60:{event.id}",
-                        },
-                    ]
+                    buttons = []
                 await self._outbox.enqueue(
                     user_id=user.id,
                     payload={"telegram_id": user.telegram_id, "text": text, "buttons": buttons},
@@ -264,9 +252,18 @@ class ReminderDispatchService:
 
     def _format_reminder(self, user: User, title: str, occurrence_utc: datetime, offset_minutes: int) -> str:
         local = occurrence_utc.astimezone(ZoneInfo(user.timezone)).strftime("%d.%m %H:%M")
+        safe_title = escape(title)
         if offset_minutes == 0:
-            return f"Напоминание: {title} (сейчас, событие в {local})."
-        return f"Напоминание за {offset_minutes} мин: {title} (событие в {local})."
+            return (
+                f"🔔 <b>Время пришло</b>\n\n"
+                f"<b>{safe_title}</b>\n"
+                f"📅 {local}"
+            )
+        return (
+            f"⏰ <b>Напоминание через {offset_minutes} мин</b>\n\n"
+            f"<b>{safe_title}</b>\n"
+            f"📅 Событие: {local}"
+        )
 
     async def _render_for_user(self, user: User, text: str, response_kind: str) -> str:
         if self._renderer is None:

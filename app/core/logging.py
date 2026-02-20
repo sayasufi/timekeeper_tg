@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import sys
 
 import structlog
@@ -14,7 +14,7 @@ def setup_logging(log_level: str) -> None:
             structlog.stdlib.add_log_level,
             structlog.stdlib.add_logger_name,
             structlog.processors.format_exc_info,
-            structlog.processors.JSONRenderer(),
+            structlog.processors.JSONRenderer(ensure_ascii=False),
         ],
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
