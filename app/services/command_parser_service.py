@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import zlib
@@ -20,6 +20,7 @@ from app.services.smart_agents import (
     BatchPlanCriticAgent,
     ClarificationQuestionAgent,
     CommandAgent,
+    ContextCompressorAgent,
     ConversationManagerAgent,
     EntityExtractionAgent,
     ExecutionSupervisorAgent,
@@ -47,6 +48,8 @@ logger = structlog.get_logger(__name__)
 
 
 class CommandParserService:
+    _MAX_DIALOG_HISTORY_ITEMS = 8
+
     def __init__(
         self,
         llm_client: LLMClient,
@@ -64,6 +67,7 @@ class CommandParserService:
         self._primary_assistant = PrimaryAssistantAgent(llm_client)
         self._help_knowledge = HelpKnowledgeAgent(llm_client)
         self._conversation_manager = ConversationManagerAgent(llm_client)
+        self._context_compressor = ContextCompressorAgent(llm_client)
         self._batch_plan_critic = BatchPlanCriticAgent(llm_client)
         self._execution_supervisor = ExecutionSupervisorAgent(llm_client)
         self._plan_repair = PlanRepairAgent(llm_client)
@@ -89,6 +93,7 @@ class CommandParserService:
         timezone: str,
         user_id: int | None = None,
         user_memory: UserMemoryProfile | None = None,
+        context: dict[str, object] | None = None,
     ) -> ParsedCommand:
         started = perf_counter()
         request_id = uuid4().hex
@@ -96,13 +101,19 @@ class CommandParserService:
             logger.info("parser.parse_started", locale=locale, timezone=timezone, text_len=len(text))
             route_mode = self._select_route_mode(user_id=user_id, text=text)
             error_class: str | None = None
+            agent_memory = await self._agent_memory(
+                locale=locale,
+                timezone=timezone,
+                user_memory=user_memory,
+                context=context,
+            )
             try:
                 result, trace = await self._graph.run_with_trace(
                     text=text,
                     locale=locale,
                     timezone=timezone,
                     route_mode=route_mode,
-                    user_memory=(asdict(user_memory) if user_memory is not None else None),
+                    user_memory=agent_memory,
                 )
             except (ValueError, json.JSONDecodeError, SyntaxError) as exc:
                 logger.warning("parser.graph_failed")
@@ -152,13 +163,20 @@ class CommandParserService:
         locale: str,
         timezone: str,
         user_memory: UserMemoryProfile | None = None,
+        context: dict[str, object] | None = None,
     ) -> str | None:
+        agent_memory = await self._agent_memory(
+            locale=locale,
+            timezone=timezone,
+            user_memory=user_memory,
+            context=context,
+        )
         try:
             decision = await self._primary_assistant.decide(
                 text=text,
                 locale=locale,
                 timezone=timezone,
-                user_memory=(asdict(user_memory) if user_memory is not None else None),
+                user_memory=agent_memory,
             )
         except Exception:
             logger.exception("parser.primary_assistant_failed")
@@ -175,7 +193,7 @@ class CommandParserService:
                 text=text,
                 locale=locale,
                 timezone=timezone,
-                user_memory=(asdict(user_memory) if user_memory is not None else None),
+                user_memory=agent_memory,
             )
             resolved = (help_answer.answer or "").strip()
             if help_answer.confidence >= 0.65 and resolved:
@@ -191,8 +209,14 @@ class CommandParserService:
         locale: str,
         timezone: str,
         user_memory: UserMemoryProfile | None = None,
+        context: dict[str, object] | None = None,
     ) -> tuple[str, list[str], str | None, str | None, str, bool]:
-        memory = asdict(user_memory) if user_memory is not None else None
+        memory = await self._agent_memory(
+            locale=locale,
+            timezone=timezone,
+            user_memory=user_memory,
+            context=context,
+        )
         try:
             route = await self._conversation_manager.route(
                 text=text,
@@ -213,6 +237,7 @@ class CommandParserService:
                 locale=locale,
                 timezone=timezone,
                 user_memory=user_memory,
+                context=context,
             )
             if helper_answer:
                 return "answer", [], helper_answer, None, "continue_on_error", False
@@ -228,6 +253,7 @@ class CommandParserService:
             locale=locale,
             timezone=timezone,
             user_memory=user_memory,
+            context=context,
         )
         if mode == "clarify":
             return "clarify", [], None, question or default_clarify_question(), exec_mode, False
@@ -238,6 +264,7 @@ class CommandParserService:
             locale=locale,
             timezone=timezone,
             user_memory=user_memory,
+            context=context,
         )
         return "commands", reviewed_ops, None, None, strategy, stop_on_error
 
@@ -249,7 +276,14 @@ class CommandParserService:
         locale: str,
         timezone: str,
         user_memory: UserMemoryProfile | None = None,
+        context: dict[str, object] | None = None,
     ) -> tuple[str, str | None, str | None]:
+        agent_memory = await self._agent_memory(
+            locale=locale,
+            timezone=timezone,
+            user_memory=user_memory,
+            context=context,
+        )
         try:
             decision = await self._plan_repair.repair(
                 text=text,
@@ -257,7 +291,7 @@ class CommandParserService:
                 reason=reason,
                 locale=locale,
                 timezone=timezone,
-                user_memory=(asdict(user_memory) if user_memory is not None else None),
+                user_memory=agent_memory,
             )
         except Exception:
             logger.exception("parser.plan_repair_failed")
@@ -278,14 +312,21 @@ class CommandParserService:
         timezone: str,
         fallback: str,
         user_memory: UserMemoryProfile | None = None,
+        context: dict[str, object] | None = None,
     ) -> str:
+        agent_memory = await self._agent_memory(
+            locale=locale,
+            timezone=timezone,
+            user_memory=user_memory,
+            context=context,
+        )
         try:
             follow_up = await self._clarifier.run(
                 text=f"Запрос: {text}\nКонтекст: {reason}",
                 locale=locale,
                 timezone=timezone,
                 fallback=fallback,
-                user_memory=(asdict(user_memory) if user_memory is not None else None),
+                user_memory=agent_memory,
             )
             question = follow_up.question.strip()
             return question or fallback
@@ -300,17 +341,24 @@ class CommandParserService:
         locale: str,
         timezone: str,
         user_memory: UserMemoryProfile | None = None,
+        context: dict[str, object] | None = None,
     ) -> tuple[str, list[str], str | None, str]:
         if not operations:
             return "commands", [], None, "continue_on_error"
 
+        agent_memory = await self._agent_memory(
+            locale=locale,
+            timezone=timezone,
+            user_memory=user_memory,
+            context=context,
+        )
         try:
             decision = await self._batch_plan_critic.critique(
                 text=text,
                 operations=operations,
                 locale=locale,
                 timezone=timezone,
-                user_memory=(asdict(user_memory) if user_memory is not None else None),
+                user_memory=agent_memory,
             )
         except Exception:
             logger.exception("parser.batch_plan_critic_failed")
@@ -328,7 +376,14 @@ class CommandParserService:
         locale: str,
         timezone: str,
         user_memory: UserMemoryProfile | None = None,
+        context: dict[str, object] | None = None,
     ) -> tuple[str, bool]:
+        agent_memory = await self._agent_memory(
+            locale=locale,
+            timezone=timezone,
+            user_memory=user_memory,
+            context=context,
+        )
         try:
             decision = await self._execution_supervisor.supervise(
                 text=text,
@@ -336,7 +391,7 @@ class CommandParserService:
                 execution_mode=execution_mode,
                 locale=locale,
                 timezone=timezone,
-                user_memory=(asdict(user_memory) if user_memory is not None else None),
+                user_memory=agent_memory,
             )
             return decision.strategy, decision.stop_on_error
         except Exception:
@@ -353,7 +408,14 @@ class CommandParserService:
         timezone: str,
         fallback: str,
         user_memory: UserMemoryProfile | None = None,
+        context: dict[str, object] | None = None,
     ) -> str:
+        agent_memory = await self._agent_memory(
+            locale=locale,
+            timezone=timezone,
+            user_memory=user_memory,
+            context=context,
+        )
         try:
             decision = await self._response_policy.render(
                 kind=kind,
@@ -361,7 +423,7 @@ class CommandParserService:
                 reason=reason,
                 locale=locale,
                 timezone=timezone,
-                user_memory=(asdict(user_memory) if user_memory is not None else None),
+                user_memory=agent_memory,
             )
             text = (decision.text or "").strip()
             if decision.confidence >= 0.65 and text:
@@ -380,6 +442,86 @@ class CommandParserService:
         key = f"{user_id}:{text[:12]}".encode()
         bucket = zlib.crc32(key) % 100
         return "fast" if bucket < 20 else "precise"
+
+    def _memory_with_context(
+        self,
+        user_memory: UserMemoryProfile | None,
+        context: dict[str, object] | None,
+    ) -> dict[str, object] | None:
+        memory: dict[str, object] | None = asdict(user_memory) if user_memory is not None else None
+        if context is None:
+            return memory
+        if memory is None:
+            return {"context": context}
+        merged = dict(memory)
+        merged["context"] = context
+        return merged
+
+    async def _agent_memory(
+        self,
+        *,
+        locale: str,
+        timezone: str,
+        user_memory: UserMemoryProfile | None,
+        context: dict[str, object] | None,
+    ) -> dict[str, object] | None:
+        normalized_context = self._normalize_context(context)
+        merged = self._memory_with_context(user_memory, normalized_context)
+        if merged is None or context is None:
+            return merged
+        latest_user_text = normalized_context.get("latest_user_text")
+        try:
+            serialized = json.dumps(normalized_context, ensure_ascii=False)
+        except Exception:
+            return merged
+        if len(serialized) <= 1200:
+            if latest_user_text is not None:
+                merged["latest_user_text"] = latest_user_text
+            return merged
+        context_for_compression = {
+            key: value
+            for key, value in normalized_context.items()
+            if key != "latest_user_text"
+        }
+        try:
+            compressed = await self._context_compressor.compress(
+                context=context_for_compression,
+                locale=locale,
+                timezone=timezone,
+                user_memory=(asdict(user_memory) if user_memory is not None else None),
+            )
+        except Exception:
+            logger.exception("parser.context_compressor_failed")
+            return merged
+        if compressed.confidence < 0.6:
+            return merged
+        compact_context = {
+            "summary": compressed.summary,
+            "facts": compressed.facts,
+            "original_keys": sorted(context_for_compression.keys()),
+        }
+        result = dict(merged)
+        result["context_compact"] = compact_context
+        result.pop("context", None)
+        if latest_user_text is not None:
+            result["latest_user_text"] = latest_user_text
+        return result
+
+    def _normalize_context(self, context: dict[str, object] | None) -> dict[str, object] | None:
+        if context is None:
+            return None
+        normalized = dict(context)
+        history = normalized.get("dialog_history")
+        if isinstance(history, list):
+            trimmed: list[dict[str, str]] = []
+            for item in history[-self._MAX_DIALOG_HISTORY_ITEMS :]:
+                if isinstance(item, dict):
+                    role = str(item.get("role", "user"))
+                    content = str(item.get("content", "")).strip()
+                    if content:
+                        trimmed.append({"role": role, "content": content})
+            normalized["dialog_history"] = trimmed
+        return normalized
 
     async def _persist_trace(
         self,
@@ -429,3 +571,5 @@ class CommandParserService:
             total_duration_ms=trace.total_duration_ms,
         )
         await self._trace_repository.create(db_trace)
+
+

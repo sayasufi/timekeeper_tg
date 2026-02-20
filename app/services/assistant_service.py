@@ -78,14 +78,15 @@ class AssistantService:
         user = await self._users.get_or_create(telegram_id=telegram_id, language=language)
         user_memory = self._memory.build_profile(user)
         dialog_state = await self._get_dialog_state(telegram_id)
-        agent_input = self._compose_agent_input(dialog_state, text)
+        context_package = await self._build_context_package(user=user, state=dialog_state, latest_text=text)
 
         try:
             mode, operations, answer, question, execution_strategy, stop_on_error = await self._parser.route_conversation(
-                text=agent_input,
+                text=text,
                 locale=user.language,
                 timezone=user.timezone,
                 user_memory=user_memory,
+                context=context_package,
             )
             if mode == "clarify":
                 clarify_text = question or await self._ask_clarification(
@@ -94,6 +95,7 @@ class AssistantService:
                     reason="Не хватает данных для безопасного выполнения запроса.",
                     fallback="Уточните, пожалуйста, запрос.",
                     user_memory=user_memory,
+                    context=context_package,
                 )
                 dialog_state.pending_question = clarify_text
                 dialog_state.pending_reason = "missing_required_data"
@@ -116,6 +118,7 @@ class AssistantService:
                     timezone=user.timezone,
                     fallback="Могу помочь по функциям бота и расписанию. Сформулируйте вопрос чуть точнее.",
                     user_memory=user_memory,
+                    context=context_package,
                 )
                 response = AssistantResponse(answer_text, metadata={"handled_by": "conversation_manager"})
                 dialog_state.pending_question = None
@@ -151,6 +154,7 @@ class AssistantService:
                 timezone=user.timezone,
                 user_id=user.id,
                 user_memory=user_memory,
+                context=context_package,
             )
             response = await self._execute_with_disambiguation(
                 user=user,
@@ -175,6 +179,7 @@ class AssistantService:
                     reason=f"Внутренняя ошибка: {exc}",
                     fallback="Произошла ошибка обработки запроса. Попробуйте еще раз.",
                     user_memory=user_memory,
+                    context=context_package,
                 )
             )
             await self._save_dialog_state(
@@ -243,12 +248,19 @@ class AssistantService:
         text: str,
     ) -> AssistantResponse:
         user = await self._users.get_or_create(telegram_id=telegram_id, language=language)
+        user_memory = self._memory.build_profile(user)
+        context_package = await self._build_context_package(
+            user=user,
+            state=await self._get_dialog_state(telegram_id),
+            latest_text=text,
+        )
         command = await self._parser.parse(
             text=text,
             locale=user.language,
             timezone=user.timezone,
             user_id=user.id,
-            user_memory=self._memory.build_profile(user),
+            user_memory=user_memory,
+            context=context_package,
         )
         if not isinstance(command, UpdateScheduleCommand):
             clarification = await self._ask_clarification(
@@ -256,7 +268,8 @@ class AssistantService:
                 source_text=text,
                 reason="Ожидался перенос урока, но в сообщении нет однозначных параметров переноса.",
                 fallback="Уточните перенос: на какую дату и время перенести занятие?",
-                user_memory=self._memory.build_profile(user),
+                user_memory=user_memory,
+                context=context_package,
             )
             response = AssistantResponse(
                 clarification,
@@ -269,7 +282,8 @@ class AssistantService:
                 source_text=text,
                 reason="Не указан scope переноса: разово или для всей серии.",
                 fallback="Уточните, как применить перенос: только на этой неделе или навсегда в расписании?",
-                user_memory=self._memory.build_profile(user),
+                user_memory=user_memory,
+                context=context_package,
             )
             response = AssistantResponse(
                 clarification,
@@ -319,7 +333,8 @@ class AssistantService:
                         source_text=text,
                         reason="Не удалось подобрать слот без явной новой даты/времени.",
                         fallback="Уточните перенос: на какую дату и время перенести занятие?",
-                        user_memory=self._memory.build_profile(user),
+                        user_memory=user_memory,
+                        context=context_package,
                     ),
                     metadata={"pending_keep": True},
                 )
@@ -451,6 +466,7 @@ class AssistantService:
                         reason="Для изменения расписания не хватает scope применения изменений.",
                         fallback="Уточните перенос: применить только на этой неделе или изменить расписание навсегда?",
                         user_memory=self._memory.build_profile(user),
+                        context={},
                     )
                 )
             if command.bulk_cancel_weekday and command.bulk_cancel_scope and not bypass_confirmation:
@@ -975,12 +991,14 @@ class AssistantService:
         attempt_text = item
         for _attempt in range(2):
             try:
+                batch_context = self._batch_context(original_text=original_text, item_text=attempt_text)
                 command = await self._parser.parse(
                     text=attempt_text,
                     locale=user.language,
                     timezone=user.timezone,
                     user_id=user.id,
                     user_memory=user_memory,
+                    context=batch_context,
                 )
             except Exception as exc:
                 mode, repaired, question = await self._parser.repair_operation(
@@ -990,6 +1008,7 @@ class AssistantService:
                     locale=user.language,
                     timezone=user.timezone,
                     user_memory=user_memory,
+                    context=batch_context,
                 )
                 if mode == "skip":
                     return None
@@ -1004,6 +1023,7 @@ class AssistantService:
                         reason=f"Не удалось распарсить шаг операции: {attempt_text}",
                         fallback="Уточните, пожалуйста, шаг операции.",
                         user_memory=user_memory,
+                        context=batch_context,
                     )
                 )
 
@@ -1015,6 +1035,7 @@ class AssistantService:
                     locale=user.language,
                     timezone=user.timezone,
                     user_memory=user_memory,
+                    context=batch_context,
                 )
                 if mode == "skip":
                     return None
@@ -1029,6 +1050,7 @@ class AssistantService:
                         reason=command.question,
                         fallback=command.question,
                         user_memory=user_memory,
+                        context=batch_context,
                     )
                 )
 
@@ -1041,6 +1063,7 @@ class AssistantService:
                 reason="После повтора шаг операции не удалось распарсить/выполнить.",
                 fallback="Не удалось выполнить шаг операции. Уточните формулировку.",
                 user_memory=user_memory,
+                context=self._batch_context(original_text=original_text, item_text=item),
             )
         )
 
@@ -1052,6 +1075,7 @@ class AssistantService:
         reason: str,
         fallback: str,
         user_memory: object,
+        context: dict[str, object] | None = None,
     ) -> str:
         from app.db.models import User
         from app.services.smart_agents.models import UserMemoryProfile
@@ -1067,6 +1091,7 @@ class AssistantService:
             timezone=user.timezone,
             fallback=fallback,
             user_memory=user_memory,
+            context=context,
         )
 
     async def _get_dialog_state(self, telegram_id: int) -> DialogState:
@@ -1098,19 +1123,35 @@ class AssistantService:
         except Exception:
             logger.exception("assistant.dialog_state_write_failed", telegram_id=telegram_id)
 
-    def _compose_agent_input(self, state: DialogState, text: str) -> str:
-        if not state.turns and state.pending_question is None:
-            return text
-        history_lines: list[str] = []
-        for item in state.turns[-6:]:
-            role = item.get("role", "user")
-            content = item.get("content", "")
-            if content:
-                history_lines.append(f"{role}: {content}")
-        if state.pending_question:
-            history_lines.append(f"pending_question: {state.pending_question}")
-        history_lines.append(f"user: {text}")
-        return "Диалоговый контекст:\n" + "\n".join(history_lines)
+    async def _build_context_package(
+        self,
+        *,
+        user: object,
+        state: DialogState,
+        latest_text: str,
+    ) -> dict[str, object]:
+        from app.db.models import User
+
+        if not isinstance(user, User):
+            return {}
+        try:
+            backend_state = await self._events.compact_user_context(user)
+        except Exception:
+            logger.exception("assistant.backend_context_failed", user_id=user.id)
+            backend_state = {}
+        return {
+            "dialog_history": state.turns[-6:],
+            "pending_question": state.pending_question,
+            "pending_reason": state.pending_reason,
+            "latest_user_text": latest_text,
+            "backend_state": backend_state,
+        }
+
+    def _batch_context(self, *, original_text: str, item_text: str) -> dict[str, object]:
+        return {
+            "batch_original_text": original_text,
+            "batch_item": item_text,
+        }
 
     def _is_batch_failure_response(self, text: str) -> bool:
         low = text.lower()

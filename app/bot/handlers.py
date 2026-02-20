@@ -25,12 +25,14 @@ from app.repositories.student_repository import StudentRepository
 from app.repositories.user_repository import UserRepository
 from app.services.ambiguity_store import AmbiguityStore
 from app.services.assistant_response import AssistantResponse
+from app.services.command_parser_service import CommandParserService
 from app.services.confirmation_store import ConfirmationStore
 from app.services.due_index_service import DueIndexService
 from app.services.event_service import EventService
 from app.services.idempotency_store import IdempotencyStore
 from app.services.pending_action_store import PendingAction, PendingActionStore
 from app.services.quick_action_store import QuickActionStore
+from app.services.smart_agents import UserMemoryAgent
 
 logger = structlog.get_logger(__name__)
 router = Router()
@@ -710,10 +712,18 @@ async def _render_for_message_user(
         telegram_id=message.from_user.id,
         language=message.from_user.language_code or "ru",
     )
+    policy_text = await _render_policy_text_for_user(
+        container=container,
+        user=user,
+        kind="handler_message",
+        source_text=raw_text,
+        reason=response_kind,
+        fallback=raw_text,
+    )
     renderer = container.create_bot_response_service()
     return await renderer.render_for_user(
         user=user,
-        raw_text=raw_text,
+        raw_text=policy_text,
         response_kind=response_kind,
     )
 
@@ -737,9 +747,17 @@ async def _answer_callback_notice(
         language=from_user.language_code or "ru",
     )
     renderer = container.create_bot_response_service()
+    policy_text = await _render_policy_text_for_user(
+        container=container,
+        user=user,
+        kind="callback_notice",
+        source_text=raw_text,
+        reason=response_kind,
+        fallback=raw_text,
+    )
     text = await renderer.render_for_user(
         user=user,
-        raw_text=raw_text,
+        raw_text=policy_text,
         response_kind=response_kind,
     )
     await callback.answer(text, show_alert=show_alert)
@@ -769,3 +787,31 @@ async def _register_callback_once(callback: CallbackQuery, container: AppContain
     key = f"cb:{callback.from_user.id}:{callback.id}"
     store = IdempotencyStore(container.redis)
     return await store.register_once(key)
+
+
+async def _render_policy_text_for_user(
+    *,
+    container: AppContainer,
+    user: object,
+    kind: str,
+    source_text: str,
+    reason: str,
+    fallback: str,
+) -> str:
+    from app.db.models import User
+
+    if not isinstance(user, User):
+        return fallback
+
+    parser = CommandParserService(container.llm_client)
+    memory_agent = UserMemoryAgent()
+    user_memory = memory_agent.build_profile(user)
+    return await parser.render_policy_text(
+        kind=kind,
+        source_text=source_text,
+        reason=reason,
+        locale=user.language,
+        timezone=user.timezone,
+        fallback=fallback,
+        user_memory=user_memory,
+    )

@@ -157,3 +157,10 @@ class ExecutionSupervisionDecision:
 class ResponsePolicyDecision:
     text: str | None
     confidence: float
+
+
+@dataclass(slots=True)
+class ContextCompressionDecision:
+    summary: str
+    facts: list[str]
+    confidence: float

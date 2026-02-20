@@ -12,6 +12,7 @@ from app.services.smart_agents.models import (
     AgentOutput,
     BatchPlanCriticDecision,
     BotReplyDecision,
+    ContextCompressionDecision,
     ConversationRouteDecision,
     ExecutionSupervisionDecision,
     HelpKnowledgeDecision,
@@ -26,6 +27,7 @@ from app.services.smart_agents.prompts import (
     build_bot_reply_prompt,
     build_clarify_prompt,
     build_command_prompt,
+    build_context_compressor_prompt,
     build_conversation_manager_prompt,
     build_execution_supervisor_prompt,
     build_help_knowledge_prompt,
@@ -436,3 +438,31 @@ class ResponsePolicyAgent(BaseLLMAgent):
         parsed = self._parse_output(await self._complete(prompt, stage="response_policy"))
         text = str(parsed.result.get("text")) if parsed.result.get("text") is not None else None
         return ResponsePolicyDecision(text=text, confidence=parsed.confidence)
+
+
+class ContextCompressorAgent(BaseLLMAgent):
+    async def compress(
+        self,
+        *,
+        context: dict[str, Any],
+        locale: str,
+        timezone: str,
+        user_memory: dict[str, Any] | None = None,
+    ) -> ContextCompressionDecision:
+        prompt = build_context_compressor_prompt(
+            context=context,
+            locale=locale,
+            timezone=timezone,
+            user_memory=user_memory,
+        )
+        parsed = self._parse_output(await self._complete(prompt, stage="context_compressor"))
+        summary = str(parsed.result.get("summary", "")).strip()
+        facts_raw = parsed.result.get("facts")
+        facts: list[str] = []
+        if isinstance(facts_raw, list):
+            facts = [str(item).strip() for item in facts_raw if str(item).strip()]
+        return ContextCompressionDecision(
+            summary=summary,
+            facts=facts,
+            confidence=parsed.confidence,
+        )

@@ -354,3 +354,26 @@ async def test_response_policy_returns_fallback_on_invalid_json() -> None:
         fallback="Ошибка",
     )
     assert rendered == "Ошибка"
+
+
+@pytest.mark.asyncio
+async def test_route_conversation_compresses_large_context() -> None:
+    parser = CommandParserService(
+        llm_client=SequenceLLM(
+            [
+                '{"result":{"summary":"Краткая сводка","facts":["Есть pending вопрос"]},"confidence":0.9,"needs_clarification":false,"clarify_question":null,"reasons":[]}',
+                '{"result":{"mode":"answer","operations":[],"answer":"Готово","question":null},"confidence":0.9,"needs_clarification":false,"clarify_question":null,"reasons":[]}',
+            ]
+        )
+    )
+    mode, _ops, answer, _question, _execution_mode, _stop_on_error = await parser.route_conversation(
+        text="что дальше?",
+        locale="ru",
+        timezone="UTC",
+        context={
+            "dialog_history": [{"role": "user", "content": "x" * 5000}],
+            "latest_user_text": "что дальше?",
+        },
+    )
+    assert mode == "answer"
+    assert answer == "Готово"

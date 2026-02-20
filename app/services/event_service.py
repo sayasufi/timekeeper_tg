@@ -60,6 +60,30 @@ class EventService:
         self._conflicts = conflict_detection_agent or ConflictDetectionAgent()
         self._optimizer = schedule_optimization_agent or ScheduleOptimizationAgent()
 
+    async def compact_user_context(self, user: User) -> dict[str, object]:
+        now_utc = datetime.now(tz=UTC)
+        events = await self._events.list_for_user(user.id, only_active=True)
+        lessons = [item for item in events if item.event_type == EventType.LESSON.value]
+        upcoming_candidates = [event_next_occurrence(item, now_utc) for item in events]
+        upcoming_values = [item for item in upcoming_candidates if item is not None]
+        upcoming = min(upcoming_values) if upcoming_values else None
+
+        students_total = 0
+        students_low_balance = 0
+        if self._students is not None:
+            students = await self._students.list_for_user(user.id)
+            students_total = len(students)
+            students_low_balance = sum(1 for item in students if (item.subscription_remaining_lessons or 0) <= 1)
+
+        return {
+            "active_events": len(events),
+            "active_lessons": len(lessons),
+            "students_total": students_total,
+            "students_low_balance": students_low_balance,
+            "upcoming_at_utc": upcoming.isoformat() if upcoming is not None else None,
+            "timezone": user.timezone,
+        }
+
     async def create_reminder(self, user: User, cmd: CreateReminderCommand) -> str:
         if cmd.timezone:
             self._validate_timezone(cmd.timezone)

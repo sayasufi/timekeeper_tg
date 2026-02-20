@@ -370,5 +370,26 @@ def build_response_policy_prompt(
     )
 
 
+def build_context_compressor_prompt(
+    context: dict[str, Any],
+    locale: str,
+    timezone: str,
+    user_memory: dict[str, Any] | None = None,
+) -> str:
+    return (
+        f"{_contract_header()} "
+        "Ты ContextCompressorAgent для TimeKeeper. "
+        "Сожми контекст диалога в компактный структурный вид для других агентов. "
+        'Верни result формата: {"summary":"строка","facts":["..."]}. '
+        "Rules:\n"
+        "1) Сохрани только факты, влияющие на выполнение команд.\n"
+        "2) Не добавляй домыслы.\n"
+        "3) Facts должны быть короткими и проверяемыми.\n"
+        f"Локаль: {locale}. Таймзона: {timezone}."
+        f"{_memory_block(user_memory)}\n"
+        f"Контекст: {json.dumps(context, ensure_ascii=False)}"
+    )
+
+
 def default_clarify_question() -> str:
     return "Уточните, пожалуйста: какую именно операцию нужно выполнить и для какого события?"
