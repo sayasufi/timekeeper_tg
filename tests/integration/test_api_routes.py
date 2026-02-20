@@ -12,8 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.api.routes import router
 from app.core.config import Settings
 from app.core.container import AppContainer
-from app.db.models import Event
+from app.db.models import AgentRunTrace, Event
 from app.domain.enums import EventType
+from app.repositories.agent_run_trace_repository import AgentRunTraceRepository
 from app.repositories.event_repository import EventRepository
 from app.repositories.user_repository import UserRepository
 
@@ -139,3 +140,52 @@ async def test_export_user_endpoint(
     body = response.json()
     assert body["data"]["user"]["telegram_id"] == 555
     assert Path(body["snapshot_path"]).exists()
+
+
+@pytest.mark.asyncio
+async def test_agent_quality_endpoint(
+    session_factory: async_sessionmaker[AsyncSession],
+    fake_redis: Any,
+    tmp_path: Path,
+) -> None:
+    settings = Settings(TELEGRAM_BOT_TOKEN="test", EXPORT_DIR=tmp_path)
+    container = AppContainer(
+        settings=settings,
+        session_factory=session_factory,
+        redis=fake_redis,
+        llm_client=DummyLLM(),
+        stt_client=DummySTT(),
+        notifier=DummyNotifier(),
+    )
+
+    async with session_factory() as session:
+        users = UserRepository(session)
+        traces = AgentRunTraceRepository(session)
+        user = await users.get_or_create(telegram_id=777, language="ru")
+        await traces.create(
+            AgentRunTrace(
+                user_id=user.id,
+                source="parser",
+                input_text="test",
+                locale="ru",
+                timezone="UTC",
+                route_mode="precise",
+                result_intent="clarify",
+                confidence=0.4,
+                selected_path=["clarify"],
+                stages=[],
+                total_duration_ms=11,
+            )
+        )
+        await session.commit()
+
+    app = FastAPI()
+    app.include_router(router)
+    app.state.container = container
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/admin/agent-quality", params={"telegram_id": 777, "days": 7})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["metrics"]["clarification_rate"] >= 0.0

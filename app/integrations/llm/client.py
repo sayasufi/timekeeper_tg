@@ -31,6 +31,7 @@ class HTTPLLMClient(LLMClient):
             "max_tokens": 512,
             "repeat_penalty": 1.2,
             "stream": False,
+            "use_dynamic_context": False,
         }
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:

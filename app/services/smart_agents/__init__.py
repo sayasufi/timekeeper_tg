@@ -20,6 +20,7 @@
 from app.services.smart_agents.llm_core import (
     BatchPlanCriticAgent,
     BotReplyAgent,
+    ChoiceOptionsAgent,
     ClarifyAgent,
     CommandAgent,
     ContextCompressorAgent,
@@ -32,6 +33,7 @@ from app.services.smart_agents.llm_core import (
     RecoveryAgent,
     RecurrenceAgent,
     ResponsePolicyAgent,
+    TelegramFormattingAgent,
 )
 from app.services.smart_agents.models import (
     AgentGraphTrace,
@@ -40,6 +42,7 @@ from app.services.smart_agents.models import (
     BatchPlanCriticDecision,
     BotReplyDecision,
     ChangeImpact,
+    ChoiceOptionsDecision,
     ContextCompressionDecision,
     ConversationRouteDecision,
     DisambiguationCandidate,
@@ -53,6 +56,7 @@ from app.services.smart_agents.models import (
     RecurrenceDecision,
     ResponsePolicyDecision,
     ScheduleConflict,
+    TelegramFormatDecision,
     UserMemoryProfile,
 )
 from app.services.smart_agents.orchestrator import SmartGraphOrchestrator
@@ -68,6 +72,8 @@ __all__ = [
     "BotReplyDecision",
     "ChangeImpact",
     "ChangeImpactAgent",
+    "ChoiceOptionsAgent",
+    "ChoiceOptionsDecision",
     "ClarificationQuestionAgent",
     "ClarifyAgent",
     "CommandAgent",
@@ -107,6 +113,8 @@ __all__ = [
     "ScheduleOptimizationAgent",
     "SmartGraphOrchestrator",
     "SummaryAgent",
+    "TelegramFormatDecision",
+    "TelegramFormattingAgent",
     "TimeNormalizationAgent",
     "UserMemoryAgent",
     "UserMemoryProfile",

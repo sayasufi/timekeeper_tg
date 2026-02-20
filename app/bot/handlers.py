@@ -40,6 +40,14 @@ router = Router()
 
 @router.message(Command("start"))
 async def start_handler(message: Message, container: AppContainer, session: AsyncSession) -> None:
+    is_new = False
+    if message.from_user is not None:
+        user_repo = UserRepository(session)
+        _user, is_new = await user_repo.get_or_create_with_status(
+            telegram_id=message.from_user.id,
+            language=message.from_user.language_code or "ru",
+        )
+
     raw_text = (
         "TimeKeeper готов.\n"
         "Работает в свободном формате: текст и голос.\n"
@@ -58,6 +66,15 @@ async def start_handler(message: Message, container: AppContainer, session: Asyn
         response_kind="welcome",
     )
     await message.answer(text)
+    if is_new:
+        hint = await _render_timezone_hint_for_message_user(
+            container=container,
+            session=session,
+            message=message,
+        )
+        if hint is not None:
+            await message.answer(hint)
+    await session.commit()
 
 
 @router.callback_query(F.data.startswith("resolve:"))
@@ -287,7 +304,7 @@ async def snooze_callback(callback: CallbackQuery, container: AppContainer, sess
 
     user_repo = UserRepository(session)
     user = await user_repo.get_or_create(callback.from_user.id, language=callback.from_user.language_code or "ru")
-    event_service = _build_event_service(session)
+    event_service = _build_event_service(session, container=container)
     text = await event_service.snooze_event(user=user, event_id=event_id, minutes=minutes)
     text = await container.create_bot_response_service().render_for_user(
         user=user,
@@ -426,7 +443,7 @@ async def lesson_action_callback(callback: CallbackQuery, container: AppContaine
 
     user_repo = UserRepository(session)
     user = await user_repo.get_or_create(callback.from_user.id, language=callback.from_user.language_code or "ru")
-    event_service = _build_event_service(session)
+    event_service = _build_event_service(session, container=container)
 
     if action == "reschedule":
         pending_store = PendingActionStore(container.redis)
@@ -494,6 +511,13 @@ async def voice_handler(message: Message, container: AppContainer, session: Asyn
         tg_chat_id=message.chat.id,
         tg_message_id=message.message_id,
     ):
+        if await _maybe_send_timezone_hint_for_new_user(
+            container=container,
+            session=session,
+            message=message,
+        ):
+            await session.commit()
+
         file = await bot.get_file(message.voice.file_id)
         if file.file_path is None:
             text = await _render_for_message_user(
@@ -567,6 +591,13 @@ async def text_handler(message: Message, container: AppContainer, session: Async
         tg_chat_id=message.chat.id,
         tg_message_id=message.message_id,
     ):
+        if await _maybe_send_timezone_hint_for_new_user(
+            container=container,
+            session=session,
+            message=message,
+        ):
+            await session.commit()
+
         if await _try_handle_pending(
             container=container,
             session=session,
@@ -728,6 +759,81 @@ async def _render_for_message_user(
     )
 
 
+async def _maybe_send_timezone_hint_for_new_user(
+    container: AppContainer,
+    session: AsyncSession,
+    message: Message,
+) -> bool:
+    if message.from_user is None:
+        return False
+
+    user_repo = UserRepository(session)
+    user, is_new = await user_repo.get_or_create_with_status(
+        telegram_id=message.from_user.id,
+        language=message.from_user.language_code or "ru",
+    )
+    if not is_new:
+        return False
+
+    hint = await _render_timezone_hint(
+        container=container,
+        user=user,
+        source_text=f"init_timezone_hint:{message.message_id}",
+    )
+    await message.answer(hint)
+    return True
+
+
+async def _render_timezone_hint_for_message_user(
+    container: AppContainer,
+    session: AsyncSession,
+    message: Message,
+) -> str | None:
+    if message.from_user is None:
+        return None
+    user_repo = UserRepository(session)
+    user = await user_repo.get_by_telegram_id(message.from_user.id)
+    if user is None:
+        return None
+    return await _render_timezone_hint(
+        container=container,
+        user=user,
+        source_text="/start",
+    )
+
+
+async def _render_timezone_hint(
+    container: AppContainer,
+    user: object,
+    source_text: str,
+) -> str:
+    from app.db.models import User
+
+    if not isinstance(user, User):
+        return (
+            "Сейчас используется часовой пояс [UTC]. "
+            "Чтобы изменить, напишите, например: «поставь часовой пояс Алматы»."
+        )
+    raw_text = (
+        f"Сейчас используется часовой пояс [{user.timezone}]. "
+        "Чтобы изменить, напишите, например: «поставь часовой пояс Алматы»."
+    )
+    policy_text = await _render_policy_text_for_user(
+        container=container,
+        user=user,
+        kind="timezone_hint",
+        source_text=source_text,
+        reason="first_contact_timezone_hint",
+        fallback=raw_text,
+    )
+    renderer = container.create_bot_response_service()
+    return await renderer.render_for_user(
+        user=user,
+        raw_text=policy_text,
+        response_kind="timezone_hint",
+    )
+
+
 async def _answer_callback_notice(
     callback: CallbackQuery,
     container: AppContainer,
@@ -763,13 +869,14 @@ async def _answer_callback_notice(
     await callback.answer(text, show_alert=show_alert)
 
 
-def _build_event_service(session: AsyncSession) -> EventService:
+def _build_event_service(session: AsyncSession, container: AppContainer | None = None) -> EventService:
     return EventService(
         EventRepository(session),
         due_index_service=DueIndexService(DueNotificationRepository(session)),
         note_repository=NoteRepository(session),
         student_repository=StudentRepository(session),
         payment_repository=PaymentTransactionRepository(session),
+        redis=(container.redis if container is not None else None),
     )
 
 

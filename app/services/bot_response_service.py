@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+from html import escape
+from typing import ClassVar
+
 from app.db.models import User
 from app.integrations.llm.base import LLMClient
-from app.services.smart_agents import BotReplyAgent, UserMemoryAgent
+from app.services.smart_agents import BotReplyAgent, TelegramFormattingAgent, UserMemoryAgent
 
 
 class BotResponseService:
+    _NO_FORMAT_KINDS: ClassVar[frozenset[str]] = frozenset({"button_label"})
+
     def __init__(self, llm_client: LLMClient, min_confidence: float = 0.6) -> None:
         self._agent = BotReplyAgent(llm_client)
+        self._formatter = TelegramFormattingAgent(llm_client)
         self._memory = UserMemoryAgent()
         self._min_confidence = min_confidence
 
@@ -49,9 +55,32 @@ class BotResponseService:
                 user_memory=user_memory,
             )
         except Exception:
-            return raw_text
+            return self._safe_plain(raw_text, response_kind=response_kind)
 
         text = (rendered.text or "").strip()
         if rendered.confidence < self._min_confidence or not text:
-            return raw_text
-        return text
+            text = raw_text
+
+        if response_kind in self._NO_FORMAT_KINDS:
+            return text
+
+        try:
+            formatted = await self._formatter.format(
+                text=text,
+                response_kind=response_kind,
+                locale=locale,
+                timezone=timezone,
+                user_memory=user_memory,
+            )
+            formatted_text = (formatted.text or "").strip()
+            if formatted.confidence >= self._min_confidence and formatted_text:
+                return formatted_text
+        except Exception:
+            pass
+
+        return self._safe_plain(text, response_kind=response_kind)
+
+    def _safe_plain(self, text: str, *, response_kind: str) -> str:
+        if response_kind in self._NO_FORMAT_KINDS:
+            return text
+        return escape(text, quote=False)

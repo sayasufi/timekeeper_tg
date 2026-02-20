@@ -12,6 +12,7 @@ from app.services.smart_agents.models import (
     AgentOutput,
     BatchPlanCriticDecision,
     BotReplyDecision,
+    ChoiceOptionsDecision,
     ContextCompressionDecision,
     ConversationRouteDecision,
     ExecutionSupervisionDecision,
@@ -21,10 +22,12 @@ from app.services.smart_agents.models import (
     PrimaryAssistantDecision,
     RecurrenceDecision,
     ResponsePolicyDecision,
+    TelegramFormatDecision,
 )
 from app.services.smart_agents.prompts import (
     build_batch_plan_critic_prompt,
     build_bot_reply_prompt,
+    build_choice_options_prompt,
     build_clarify_prompt,
     build_command_prompt,
     build_context_compressor_prompt,
@@ -37,6 +40,7 @@ from app.services.smart_agents.prompts import (
     build_recovery_prompt,
     build_recurrence_prompt,
     build_response_policy_prompt,
+    build_telegram_format_prompt,
     default_clarify_question,
 )
 
@@ -466,3 +470,48 @@ class ContextCompressorAgent(BaseLLMAgent):
             facts=facts,
             confidence=parsed.confidence,
         )
+
+
+class TelegramFormattingAgent(BaseLLMAgent):
+    async def format(
+        self,
+        *,
+        text: str,
+        response_kind: str,
+        locale: str,
+        timezone: str,
+        user_memory: dict[str, Any] | None = None,
+    ) -> TelegramFormatDecision:
+        prompt = build_telegram_format_prompt(
+            text=text,
+            response_kind=response_kind,
+            locale=locale,
+            timezone=timezone,
+            user_memory=user_memory,
+        )
+        parsed = self._parse_output(await self._complete(prompt, stage="telegram_format"))
+        formatted = str(parsed.result.get("text")) if parsed.result.get("text") is not None else None
+        return TelegramFormatDecision(text=formatted, confidence=parsed.confidence)
+
+
+class ChoiceOptionsAgent(BaseLLMAgent):
+    async def suggest(
+        self,
+        *,
+        reply_text: str,
+        locale: str,
+        timezone: str,
+        user_memory: dict[str, Any] | None = None,
+    ) -> ChoiceOptionsDecision:
+        prompt = build_choice_options_prompt(
+            reply_text=reply_text,
+            locale=locale,
+            timezone=timezone,
+            user_memory=user_memory,
+        )
+        parsed = self._parse_output(await self._complete(prompt, stage="choice_options"))
+        options_raw = parsed.result.get("options")
+        options: list[str] = []
+        if isinstance(options_raw, list):
+            options = [str(item).strip() for item in options_raw if str(item).strip()]
+        return ChoiceOptionsDecision(options=options, confidence=parsed.confidence)

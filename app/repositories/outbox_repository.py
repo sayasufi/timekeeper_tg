@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,6 +55,11 @@ class OutboxRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars())
 
+    async def get_by_id(self, outbox_id: UUID) -> OutboxMessage | None:
+        stmt = select(OutboxMessage).where(OutboxMessage.id == outbox_id)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def mark_sent(self, item: OutboxMessage) -> None:
         item.status = "sent"
         item.last_error = None
@@ -69,6 +75,16 @@ class OutboxRepository:
         item.last_error = error
         await self._session.flush()
 
+    async def mark_dead_letter(self, item: OutboxMessage, error: str) -> None:
+        item.status = "dead_letter"
+        item.last_error = error
+        await self._session.flush()
+
     async def inc_attempts(self, item: OutboxMessage) -> None:
         item.attempts += 1
+        await self._session.flush()
+
+    async def requeue(self, item: OutboxMessage, available_at: datetime) -> None:
+        item.status = "pending"
+        item.available_at = available_at
         await self._session.flush()

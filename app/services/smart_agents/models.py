@@ -164,3 +164,15 @@ class ContextCompressionDecision:
     summary: str
     facts: list[str]
     confidence: float
+
+
+@dataclass(slots=True)
+class TelegramFormatDecision:
+    text: str | None
+    confidence: float
+
+
+@dataclass(slots=True)
+class ChoiceOptionsDecision:
+    options: list[str]
+    confidence: float

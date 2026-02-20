@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 
 import structlog
 from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from fastapi import FastAPI
 from redis.asyncio import Redis
 
@@ -44,7 +46,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         notifier=notifier,
     )
 
-    bot = Bot(token=settings.telegram_bot_token)
+    bot = Bot(
+        token=settings.telegram_bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     dispatcher = create_dispatcher(container)
 
     app.state.engine = engine

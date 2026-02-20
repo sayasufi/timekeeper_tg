@@ -44,6 +44,11 @@ class Settings(BaseSettings):
 
     scheduler_poll_seconds: int = Field(default=60, alias="SCHEDULER_POLL_SECONDS")
     max_reminder_lookahead_minutes: int = Field(default=120, alias="MAX_REMINDER_LOOKAHEAD_MINUTES")
+    outbox_max_attempts: int = Field(default=5, alias="OUTBOX_MAX_ATTEMPTS")
+    outbox_backoff_base_seconds: int = Field(default=30, alias="OUTBOX_BACKOFF_BASE_SECONDS")
+    outbox_backoff_max_seconds: int = Field(default=1800, alias="OUTBOX_BACKOFF_MAX_SECONDS")
+    outbox_dedupe_ttl_seconds: int = Field(default=86400, alias="OUTBOX_DEDUPE_TTL_SECONDS")
+    schedule_cache_ttl_seconds: int = Field(default=90, alias="SCHEDULE_CACHE_TTL_SECONDS")
 
     @property
     def telegram_webhook_url(self) -> str:

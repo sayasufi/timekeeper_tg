@@ -50,6 +50,8 @@ class AppContainer:
             note_repository=note_repo,
             student_repository=student_repo,
             payment_repository=payment_repo,
+            redis=self.redis,
+            schedule_cache_ttl_seconds=self.settings.schedule_cache_ttl_seconds,
         )
 
     def create_bot_response_service(self) -> BotResponseService:
@@ -94,6 +96,8 @@ class AppContainer:
             note_repository=note_repo,
             student_repository=student_repo,
             payment_repository=payment_repo,
+            redis=self.redis,
+            schedule_cache_ttl_seconds=self.settings.schedule_cache_ttl_seconds,
         )
         return ReminderDispatchService(
             user_repository=user_repo,
@@ -105,4 +109,9 @@ class AppContainer:
             event_service=event_service,
             notifier=self.notifier,
             response_renderer=self.create_bot_response_service(),
+            redis=self.redis,
+            outbox_max_attempts=self.settings.outbox_max_attempts,
+            outbox_backoff_base_seconds=self.settings.outbox_backoff_base_seconds,
+            outbox_backoff_max_seconds=self.settings.outbox_backoff_max_seconds,
+            outbox_dedupe_ttl_seconds=self.settings.outbox_dedupe_ttl_seconds,
         )

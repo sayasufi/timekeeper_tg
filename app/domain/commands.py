@@ -62,7 +62,7 @@ class ScheduleSlotInput(BaseModel):
     student_name: str | None = None
     subject: str | None = None
     location: str | None = None
-    remind_offsets: list[int] = Field(default_factory=lambda: [60, 15])
+    remind_offsets: list[int] = Field(default_factory=lambda: [0])
 
     @model_validator(mode="after")
     def validate_student_or_subject(self) -> ScheduleSlotInput:
@@ -103,7 +103,7 @@ class CreateBirthdayCommand(BaseCommand):
     intent: Literal[Intent.CREATE_BIRTHDAY]
     person: str
     date: str
-    remind_offsets: list[int] = Field(default_factory=lambda: [1440, 0])
+    remind_offsets: list[int] = Field(default_factory=lambda: [0])
 
 
 class MarkLessonPaidCommand(BaseCommand):

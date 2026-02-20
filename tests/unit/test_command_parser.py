@@ -377,3 +377,41 @@ async def test_route_conversation_compresses_large_context() -> None:
     )
     assert mode == "answer"
     assert answer == "Готово"
+
+
+@pytest.mark.asyncio
+async def test_suggest_quick_replies_returns_options() -> None:
+    parser = CommandParserService(
+        llm_client=SequenceLLM(
+            [
+                '{"result":{"options":["Да","Нет"]},"confidence":0.91,"needs_clarification":false,"clarify_question":null,"reasons":[]}',
+            ]
+        )
+    )
+
+    options = await parser.suggest_quick_replies(
+        reply_text="Подтвердите, пожалуйста.",
+        locale="ru",
+        timezone="UTC",
+    )
+
+    assert options == ["Да", "Нет"]
+
+
+@pytest.mark.asyncio
+async def test_suggest_quick_replies_ignores_invalid_option_count() -> None:
+    parser = CommandParserService(
+        llm_client=SequenceLLM(
+            [
+                '{"result":{"options":["1","2","3","4"]},"confidence":0.95,"needs_clarification":false,"clarify_question":null,"reasons":[]}',
+            ]
+        )
+    )
+
+    options = await parser.suggest_quick_replies(
+        reply_text="Выберите вариант.",
+        locale="ru",
+        timezone="UTC",
+    )
+
+    assert options == []

@@ -225,9 +225,11 @@ class PaymentTransaction(Base):
 
 Index("ix_events_user_type", Event.user_id, Event.event_type)
 Index("ix_events_user_active", Event.user_id, Event.is_active)
+Index("ix_events_user_starts_at", Event.user_id, Event.starts_at)
 Index("ix_due_status_trigger", DueNotification.status, DueNotification.trigger_at)
 Index("ix_outbox_status_available", OutboxMessage.status, OutboxMessage.available_at)
 Index("ix_agent_trace_user_created", AgentRunTrace.user_id, AgentRunTrace.created_at)
 Index("ix_notes_user_active", Note.user_id, Note.is_active)
 Index("ix_students_user_active", Student.user_id, Student.is_active)
 Index("ix_paytx_user_created", PaymentTransaction.user_id, PaymentTransaction.created_at)
+Index("ix_paytx_student_created", PaymentTransaction.student_id, PaymentTransaction.created_at)

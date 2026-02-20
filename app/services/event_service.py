@@ -4,6 +4,9 @@ from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+import orjson
+from redis.asyncio import Redis
+
 from app.core.datetime_utils import (
     end_of_local_day,
     next_weekday_time,
@@ -51,6 +54,8 @@ class EventService:
         payment_repository: PaymentTransactionRepository | None = None,
         conflict_detection_agent: ConflictDetectionAgent | None = None,
         schedule_optimization_agent: ScheduleOptimizationAgent | None = None,
+        redis: Redis | None = None,
+        schedule_cache_ttl_seconds: int = 90,
     ) -> None:
         self._events = event_repository
         self._due_index = due_index_service
@@ -59,6 +64,8 @@ class EventService:
         self._payments = payment_repository
         self._conflicts = conflict_detection_agent or ConflictDetectionAgent()
         self._optimizer = schedule_optimization_agent or ScheduleOptimizationAgent()
+        self._redis = redis
+        self._schedule_cache_ttl = max(30, schedule_cache_ttl_seconds)
 
     async def compact_user_context(self, user: User) -> dict[str, object]:
         now_utc = datetime.now(tz=UTC)
@@ -108,6 +115,7 @@ class EventService:
         )
         await self._events.create(event)
         await self._sync_due_index(event)
+        await self._touch_schedule_cache(user.id)
         local_time = parsed.astimezone(ZoneInfo(user.timezone)).strftime("%d.%m.%Y %H:%M")
         return f"Напоминание создано: {cmd.title} ({local_time}, {user.timezone})."
 
@@ -138,6 +146,7 @@ class EventService:
 
         await self._events.update(event)
         await self._sync_due_index(event)
+        await self._touch_schedule_cache(user.id)
         return "Событие обновлено."
 
     async def delete_reminder(self, user: User, cmd: DeleteReminderCommand) -> str:
@@ -152,6 +161,7 @@ class EventService:
 
         await self._events.soft_delete(event)
         await self._sync_due_index(event)
+        await self._touch_schedule_cache(user.id)
         return f"Событие удалено: {event.title}."
 
     async def create_schedule(self, user: User, cmd: CreateScheduleCommand) -> str:
@@ -198,6 +208,8 @@ class EventService:
             await self._sync_due_index(event)
             existing_lessons.append(event)
             created += 1
+        if created:
+            await self._touch_schedule_cache(user.id)
 
         if skipped_conflicts:
             return (
@@ -222,6 +234,8 @@ class EventService:
                 await self._events.update(lesson)
                 await self._sync_due_index(lesson)
                 updated += 1
+            if updated:
+                await self._touch_schedule_cache(user.id)
             return f"Сдвинуто уроков: {updated}."
 
         if cmd.bulk_cancel_weekday and cmd.bulk_cancel_scope:
@@ -242,6 +256,7 @@ class EventService:
         if cmd.delete:
             await self._events.soft_delete(event)
             await self._sync_due_index(event)
+            await self._touch_schedule_cache(user.id)
             return f"Урок удален: {event.title}."
 
         if cmd.title:
@@ -276,6 +291,7 @@ class EventService:
 
         await self._events.update(event)
         await self._sync_due_index(event)
+        await self._touch_schedule_cache(user.id)
         return "Урок обновлен."
 
     async def _reschedule_single_week(self, user: User, event: Event, cmd: UpdateScheduleCommand) -> str:
@@ -337,6 +353,7 @@ class EventService:
         )
         await self._events.create(moved_event)
         await self._sync_due_index(moved_event)
+        await self._touch_schedule_cache(user.id)
         local_new = new_start.astimezone(tz).strftime("%d.%m %H:%M")
         return f"Урок перенесен на {local_new} (только для этой недели)."
 
@@ -354,6 +371,8 @@ class EventService:
                 await self._events.soft_delete(lesson)
                 await self._sync_due_index(lesson)
                 affected += 1
+            if affected:
+                await self._touch_schedule_cache(user.id)
             return f"Отменено будущих серий уроков: {affected}."
 
         tz = ZoneInfo(user.timezone)
@@ -381,6 +400,8 @@ class EventService:
                 await self._events.update(lesson)
                 await self._sync_due_index(lesson)
                 affected += 1
+        if affected:
+            await self._touch_schedule_cache(user.id)
         return f"Отменено уроков на следующей неделе: {affected}."
 
     async def create_birthday(self, user: User, cmd: CreateBirthdayCommand) -> str:
@@ -405,6 +426,7 @@ class EventService:
         )
         await self._events.create(event)
         await self._sync_due_index(event)
+        await self._touch_schedule_cache(user.id)
         return f"День рождения добавлен: {cmd.person}."
 
     async def create_note(self, user: User, cmd: CreateNoteCommand) -> str:
@@ -464,6 +486,17 @@ class EventService:
         return "\n".join(lines)
 
     async def list_events(self, user: User, cmd: ListEventsCommand) -> str:
+        cache_key: str | None = None
+        if cmd.student_name is None and cmd.period in {"today", "tomorrow", "week", "date"}:
+            cache_key = await self._schedule_cache_key(
+                user_id=user.id,
+                period=cmd.period,
+                date_value=cmd.date,
+            )
+            cached = await self._cache_get_text(cache_key)
+            if cached is not None:
+                return cached
+
         events = await self._events.list_for_user(user.id, only_active=True)
         if not events:
             return "Событий пока нет."
@@ -539,7 +572,10 @@ class EventService:
                 lines.append(f"- {local} • {student_name}")
             else:
                 lines.append(f"- [{event.event_type}] {local} {event.title}")
-        return "\n".join(lines)
+        rendered = "\n".join(lines)
+        if cache_key is not None:
+            await self._cache_set_text(cache_key, rendered)
+        return rendered
 
     async def lessons_for_day(self, user: User, day: date) -> list[tuple[datetime, Event]]:
         lessons = await self._events.list_active_lessons_for_user(user.id)
@@ -594,7 +630,8 @@ class EventService:
         return "\n".join(lines)
 
     async def tutor_finance_report(self, user: User, period_days: int) -> str:
-        from_utc = datetime.now(tz=UTC) - timedelta(days=period_days)
+        now_utc = datetime.now(tz=UTC)
+        from_utc = now_utc - timedelta(days=period_days)
         paid_sum = 0
         if self._payments is not None:
             payments = await self._payments.list_for_user(user_id=user.id, from_utc=from_utc, to_utc=None, limit=1000)
@@ -603,27 +640,47 @@ class EventService:
         lessons = await self._events.list_active_lessons_for_user(user.id)
         pending_count = 0
         debts: dict[str, int] = {}
+        accrued_sum = 0
         for lesson in lessons:
             paid_at_raw = lesson.extra_data.get("payment_paid_at")
             student_name = str(lesson.extra_data.get("student_name", lesson.title))
             payment_status = str(lesson.extra_data.get("payment_status", "unknown"))
+            lesson_price = 0
+            if self._students is not None:
+                sid_raw = lesson.extra_data.get("student_id")
+                if isinstance(sid_raw, str):
+                    try:
+                        student = await self._students.get_for_user_by_id(user.id, UUID(sid_raw))
+                    except ValueError:
+                        student = None
+                    if student is not None:
+                        lesson_price = self._infer_student_lesson_price(student) or 0
+            if lesson_price <= 0:
+                raw_amount = lesson.extra_data.get("payment_amount")
+                if isinstance(raw_amount, int) and raw_amount > 0:
+                    lesson_price = raw_amount
+
             paid_at: datetime | None = None
             if isinstance(paid_at_raw, str):
                 try:
                     paid_at = datetime.fromisoformat(paid_at_raw)
                 except ValueError:
                     paid_at = None
-            if paid_at is None and lesson.starts_at < datetime.now(tz=UTC) and payment_status != "paid":
+            if from_utc <= lesson.starts_at <= now_utc and lesson_price > 0:
+                accrued_sum += lesson_price
+            if paid_at is None and lesson.starts_at < now_utc and payment_status != "paid":
                 pending_count += 1
-                debts[student_name] = debts.get(student_name, 0) + 1
+                debts[student_name] = debts.get(student_name, 0) + max(lesson_price, 0)
 
         lines = [f"Финансы за {period_days} дн.:"]
+        lines.append(f"- Начислено: {accrued_sum}")
         lines.append(f"- Оплачено: {paid_sum}")
+        lines.append(f"- Долг: {max(accrued_sum - paid_sum, 0)}")
         lines.append(f"- Ожидают оплаты уроков: {pending_count}")
         if debts:
             lines.append("- Долги по ученикам:")
-            for name, count in sorted(debts.items(), key=lambda item: item[1], reverse=True)[:10]:
-                lines.append(f"  {name}: {count}")
+            for name, debt_amount in sorted(debts.items(), key=lambda item: item[1], reverse=True)[:10]:
+                lines.append(f"  {name}: {debt_amount}")
         return "\n".join(lines)
 
     async def tutor_attendance_log(self, user: User, period_days: int) -> str:
@@ -816,6 +873,7 @@ class EventService:
         )
         await self._events.create(snooze_event)
         await self._sync_due_index(snooze_event)
+        await self._touch_schedule_cache(user.id)
         return f"Ок, напомню через {minutes} минут."
 
     async def cancel_lesson(self, user: User, event_id: UUID, canceled_by: str = "tutor") -> str:
@@ -839,6 +897,7 @@ class EventService:
                 await self._students.update(student)
         await self._events.soft_delete(event)
         await self._sync_due_index(event)
+        await self._touch_schedule_cache(user.id)
         return f"Урок отменен: {event.title}."
 
     async def shift_lesson(self, user: User, event_id: UUID, shift_minutes: int) -> str:
@@ -851,6 +910,7 @@ class EventService:
         event.extra_data["time"] = event.starts_at.astimezone(ZoneInfo(user.timezone)).strftime("%H:%M")
         await self._events.update(event)
         await self._sync_due_index(event)
+        await self._touch_schedule_cache(user.id)
         return f"Урок перенесен на {shift_minutes} минут."
 
     async def mark_lesson_paid(
@@ -1141,10 +1201,31 @@ class EventService:
             notes = await self._notes.list_for_user(user_id=user.id, search_text=student.name)
             notes_count = len(notes)
 
+        lesson_price = self._infer_student_lesson_price(student) or 0
+        remaining = student.subscription_remaining_lessons or 0
+        estimated_balance = lesson_price * remaining if lesson_price > 0 else 0
+        lessons = await self._events.list_active_lessons_for_user(user.id)
+        now_utc = datetime.now(tz=UTC)
+        upcoming: list[datetime] = []
+        unpaid_overdue = 0
+        for lesson in lessons:
+            if str(lesson.extra_data.get("student_name", lesson.title)).lower() != student.name.lower():
+                continue
+            occ = event_next_occurrence(lesson, now_utc)
+            if occ is not None:
+                upcoming.append(occ)
+            if lesson.starts_at < now_utc and str(lesson.extra_data.get("payment_status", "unknown")) != "paid":
+                unpaid_overdue += 1
+        next_lesson = min(upcoming) if upcoming else None
+
         lines = [f"Карточка ученика: {student.name}"]
         lines.append(f"- Статус: {student.status}")
         lines.append(f"- Цена: {student.default_lesson_price or 'не задана'}")
         lines.append(f"- Предоплачено занятий: {student.subscription_remaining_lessons or 0}")
+        lines.append(f"- Баланс предоплаты (оценка): {estimated_balance}")
+        if next_lesson is not None:
+            lines.append(f"- Ближайший урок: {next_lesson.astimezone(ZoneInfo(user.timezone)).strftime('%d.%m %H:%M')}")
+        lines.append(f"- Долг (неотмеченные оплаты): {max(0, unpaid_overdue) * lesson_price if lesson_price > 0 else 0}")
         lines.append(f"- Пропуски: {student.missed_lessons_count}")
         lines.append(f"- Отмены учеником: {student.canceled_by_student_count}")
         lines.append(f"- Отмены репетитором: {student.canceled_by_tutor_count}")
@@ -1162,10 +1243,34 @@ class EventService:
         # Command is expected to be prepared by LLM; this method validates execution prerequisites.
         name = cmd.student_name
         amount = cmd.amount
-        if not name:
-            return "Уточните, от какого ученика перевод.", None, None
         if amount is None or amount <= 0:
             return "Уточните сумму перевода.", None, None
+        if not name and self._students is not None:
+            candidates: list[tuple[str, int]] = []
+            for student in await self._students.list_for_user(user.id):
+                lesson_price = self._infer_student_lesson_price(student)
+                if lesson_price is None or lesson_price <= 0:
+                    continue
+                lessons = amount // lesson_price
+                if lessons <= 0:
+                    continue
+                remainder = amount % lesson_price
+                # prioritize exact matches and larger lesson count.
+                score = (1000 if remainder == 0 else 0) + lessons
+                candidates.append((student.name, score))
+            candidates.sort(key=lambda item: item[1], reverse=True)
+            if len(candidates) == 1:
+                name = candidates[0][0]
+            elif candidates:
+                top = ", ".join(item[0] for item in candidates[:3])
+                return (
+                    f"В переводе {amount} не удалось однозначно определить ученика. "
+                    f"Похожие варианты: {top}. Уточните имя ученика.",
+                    None,
+                    None,
+                )
+        if not name:
+            return "Уточните, от какого ученика перевод.", None, None
         return (
             f"Нашел перевод: {name}, сумма {amount}. Подтвердить зачисление предоплаты?",
             name,
@@ -1235,6 +1340,44 @@ class EventService:
         if self._due_index is None:
             return
         await self._due_index.sync_event(event)
+
+    async def _touch_schedule_cache(self, user_id: int) -> None:
+        if self._redis is None:
+            return
+        await self._redis.incr(f"schedule_cache_version:{user_id}")
+
+    async def _schedule_cache_key(self, user_id: int, period: str, date_value: str | None) -> str:
+        if self._redis is None:
+            return f"schedule_cache:none:{user_id}:{period}:{date_value or ''}"
+        version_raw = await self._redis.get(f"schedule_cache_version:{user_id}")
+        version = 0
+        if version_raw is not None:
+            try:
+                version = int(version_raw.decode("utf-8") if isinstance(version_raw, bytes) else str(version_raw))
+            except ValueError:
+                version = 0
+        return f"schedule_cache:{user_id}:{version}:{period}:{date_value or ''}"
+
+    async def _cache_get_text(self, key: str) -> str | None:
+        if self._redis is None:
+            return None
+        raw = await self._redis.get(key)
+        if raw is None:
+            return None
+        try:
+            payload = orjson.loads(raw if isinstance(raw, bytes) else str(raw).encode("utf-8"))
+        except orjson.JSONDecodeError:
+            return None
+        value = payload.get("text")
+        if isinstance(value, str):
+            return value
+        return None
+
+    async def _cache_set_text(self, key: str, text: str) -> None:
+        if self._redis is None:
+            return
+        payload = orjson.dumps({"text": text}).decode("utf-8")
+        await self._redis.set(key, payload, ex=self._schedule_cache_ttl)
 
     def _template_slots(self, template: str) -> list[ScheduleSlotInput]:
         if template == "tutor_week_dense":

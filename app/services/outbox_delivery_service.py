@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from redis.asyncio import Redis
+
 from app.core.datetime_utils import is_local_time_in_range, parse_hhmm
 from app.db.models import User
 from app.integrations.telegram.base import Notifier
@@ -16,10 +18,20 @@ class OutboxDeliveryService:
         outbox_repository: OutboxRepository,
         user_repository: UserRepository,
         notifier: Notifier,
+        redis: Redis | None = None,
+        max_attempts: int = 5,
+        backoff_base_seconds: int = 30,
+        backoff_max_seconds: int = 1800,
+        dedupe_ttl_seconds: int = 86400,
     ) -> None:
         self._outbox = outbox_repository
         self._users = user_repository
         self._notifier = notifier
+        self._redis = redis
+        self._max_attempts = max(1, max_attempts)
+        self._backoff_base = max(1, backoff_base_seconds)
+        self._backoff_max = max(self._backoff_base, backoff_max_seconds)
+        self._dedupe_ttl = max(60, dedupe_ttl_seconds)
 
     async def deliver_ready(self, now_utc: datetime, limit: int = 200) -> int:
         sent = 0
@@ -37,6 +49,10 @@ class OutboxDeliveryService:
 
             await self._outbox.inc_attempts(item)
             try:
+                if await self._was_delivered(item.id.hex):
+                    await self._outbox.mark_sent(item)
+                    sent += 1
+                    continue
                 payload = item.payload
                 text = str(payload.get("text", ""))
                 telegram_id = int(payload.get("telegram_id", user.telegram_id))
@@ -51,11 +67,34 @@ class OutboxDeliveryService:
                             if isinstance(title, str) and isinstance(callback_data, str):
                                 buttons.append((title, callback_data))
                 await self._notifier.send_message(telegram_id, text, buttons=buttons)
+                await self._mark_delivered(item.id.hex)
                 await self._outbox.mark_sent(item)
                 sent += 1
             except Exception as exc:
-                await self._outbox.mark_failed(item, str(exc))
+                if item.attempts >= self._max_attempts:
+                    await self._outbox.mark_dead_letter(item, str(exc))
+                    continue
+                next_time = now_utc + timedelta(seconds=self._backoff_seconds(item.attempts))
+                await self._outbox.postpone(item, next_time)
+                item.last_error = str(exc)
         return sent
+
+    def _backoff_seconds(self, attempts: int) -> int:
+        value = self._backoff_base * (2 ** max(0, attempts - 1))
+        return min(value, self._backoff_max)
+
+    async def _was_delivered(self, key_suffix: str) -> bool:
+        if self._redis is None:
+            return False
+        key = f"outbox:delivered:{key_suffix}"
+        raw = await self._redis.get(key)
+        return raw is not None
+
+    async def _mark_delivered(self, key_suffix: str) -> None:
+        if self._redis is None:
+            return
+        key = f"outbox:delivered:{key_suffix}"
+        await self._redis.set(key, "1", ex=self._dedupe_ttl)
 
     def _next_allowed_time(self, user: User, now_utc: datetime) -> datetime | None:
         local_now = now_utc.astimezone(ZoneInfo(user.timezone))

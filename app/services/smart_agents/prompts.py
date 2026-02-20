@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from typing import Any
@@ -390,6 +390,52 @@ def build_context_compressor_prompt(
         f"Локаль: {locale}. Таймзона: {timezone}."
         f"{_memory_block(user_memory)}\n"
         f"Контекст: {json.dumps(context, ensure_ascii=False)}"
+    )
+
+
+def build_telegram_format_prompt(
+    *,
+    text: str,
+    response_kind: str,
+    locale: str,
+    timezone: str,
+    user_memory: dict[str, Any] | None = None,
+) -> str:
+    return (
+        f"{_contract_header()} "
+        "Ты TelegramFormattingAgent для TimeKeeper. "
+        "Преобразуй текст в Telegram HTML-формат: абзацы, списки, акценты "
+        "(только теги <b>, <i>, <u>, <code>, <pre>, <a>). "
+        "Не меняй факты, даты, суммы, идентификаторы и смысл. "
+        "Если kind=button_label, верни короткий plain-text без HTML-тегов. "
+        'Верни result формата: {"text":"строка"}.\n'
+        f"kind={response_kind}. Локаль: {locale}. Таймзона: {timezone}."
+        f"{_memory_block(user_memory)}\n"
+        f"text: {text}"
+    )
+
+
+def build_choice_options_prompt(
+    *,
+    reply_text: str,
+    locale: str,
+    timezone: str,
+    user_memory: dict[str, Any] | None = None,
+) -> str:
+    return (
+        f"{_contract_header()} "
+        "Ты ChoiceOptionsAgent для TimeKeeper. "
+        "Сформируй варианты выбора, чтобы пользователь мог нажать кнопку вместо ввода текста. "
+        "Возвращай 2 или 3 коротких взаимоисключающих варианта. "
+        "Если вариантов меньше двух, верни пустой список. "
+        'Верни result формата: {"options":["...","..."]}.\n'
+        "Правила:\n"
+        "1) Варианты должны быть короткими, понятными и отражать только смысл reply_text.\n"
+        "2) Не выдумывай новые факты.\n"
+        "3) Примеры: ['Да','Нет'], ['Только на этой неделе','Навсегда в расписании'].\n"
+        f"Локаль: {locale}. Таймзона: {timezone}."
+        f"{_memory_block(user_memory)}\n"
+        f"reply_text: {reply_text}"
     )
 
 

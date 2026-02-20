@@ -99,6 +99,7 @@ class AssistantService:
                 )
                 dialog_state.pending_question = clarify_text
                 dialog_state.pending_reason = "missing_required_data"
+                self._activate_clarification_scenario(state=dialog_state, source_text=text)
                 await self._save_dialog_state(
                     telegram_id=telegram_id,
                     state=dialog_state,
@@ -123,6 +124,7 @@ class AssistantService:
                 response = AssistantResponse(answer_text, metadata={"handled_by": "conversation_manager"})
                 dialog_state.pending_question = None
                 dialog_state.pending_reason = None
+                self._clear_scenario(dialog_state)
                 await self._save_dialog_state(
                     telegram_id=telegram_id,
                     state=dialog_state,
@@ -140,6 +142,7 @@ class AssistantService:
                     stop_on_error=stop_on_error,
                 )
                 await self._session.commit()
+                self._clear_scenario(dialog_state)
                 await self._save_dialog_state(
                     telegram_id=telegram_id,
                     state=dialog_state,
@@ -162,6 +165,8 @@ class AssistantService:
                 bypass_confirmation=False,
             )
             await self._session.commit()
+            if response.confirmation is None and response.ambiguity is None:
+                self._clear_scenario(dialog_state)
             await self._save_dialog_state(
                 telegram_id=telegram_id,
                 state=dialog_state,
@@ -182,6 +187,7 @@ class AssistantService:
                     context=context_package,
                 )
             )
+            self._activate_clarification_scenario(state=dialog_state, source_text=text)
             await self._save_dialog_state(
                 telegram_id=telegram_id,
                 state=dialog_state,
@@ -353,6 +359,15 @@ class AssistantService:
         payload: dict[str, Any],
     ) -> AssistantResponse:
         user = await self._users.get_or_create(telegram_id=telegram_id, language=language)
+        if action == "send_text_choice":
+            text = payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                return AssistantResponse("Неверные данные выбора.")
+            return await self.handle_text(
+                telegram_id=telegram_id,
+                text=text,
+                language=language,
+            )
         if action == "reschedule_pick":
             event_id_raw = payload.get("event_id")
             if not isinstance(event_id_raw, str):
@@ -862,6 +877,7 @@ class AssistantService:
             return response
         if self._response_renderer is None:
             return response
+        await self._maybe_attach_quick_choices(user=user, source_text=source_text, response=response)
 
         response.text = await self._response_renderer.render_for_user(
             user=user,
@@ -885,6 +901,41 @@ class AssistantService:
                     user_text=source_text,
                 )
         return response
+
+    async def _maybe_attach_quick_choices(
+        self,
+        *,
+        user: object,
+        source_text: str | None,
+        response: AssistantResponse,
+    ) -> None:
+        from app.db.models import User
+
+        if not isinstance(user, User):
+            return
+        if response.ambiguity is not None or response.confirmation is not None or response.quick_actions:
+            return
+        memory = self._memory.build_profile(user)
+        context: dict[str, object] | None = None
+        if source_text:
+            context = {"latest_user_text": source_text}
+        options = await self._parser.suggest_quick_replies(
+            reply_text=response.text,
+            locale=user.language,
+            timezone=user.timezone,
+            user_memory=memory,
+            context=context,
+        )
+        if len(options) < 2:
+            return
+        response.quick_actions = [
+            QuickAction(
+                label=option,
+                action="send_text_choice",
+                payload={"text": option},
+            )
+            for option in options[:3]
+        ]
 
     def _response_kind(self, response: AssistantResponse) -> str:
         if response.ambiguity is not None:
@@ -1115,7 +1166,7 @@ class AssistantService:
             return
         state.turns.append({"role": "user", "content": user_text})
         state.turns.append({"role": "assistant", "content": assistant_text})
-        if "уточните" not in assistant_text.lower():
+        if not state.has_active_scenario():
             state.pending_question = None
             state.pending_reason = None
         try:
@@ -1143,6 +1194,9 @@ class AssistantService:
             "dialog_history": state.turns[-6:],
             "pending_question": state.pending_question,
             "pending_reason": state.pending_reason,
+            "scenario_type": state.scenario_type,
+            "scenario_payload": state.scenario_payload,
+            "scenario_expires_at": state.scenario_expires_at,
             "latest_user_text": latest_text,
             "backend_state": backend_state,
         }
@@ -1156,3 +1210,13 @@ class AssistantService:
     def _is_batch_failure_response(self, text: str) -> bool:
         low = text.lower()
         return low.startswith("не удалось") or low.startswith("ошибка")
+
+    def _activate_clarification_scenario(self, *, state: DialogState, source_text: str) -> None:
+        state.scenario_type = "clarification_followup"
+        state.scenario_payload = {"source_text": source_text}
+        state.scenario_expires_at = (datetime.now(tz=UTC) + timedelta(hours=24)).isoformat()
+
+    def _clear_scenario(self, state: DialogState) -> None:
+        state.scenario_type = None
+        state.scenario_payload = {}
+        state.scenario_expires_at = None

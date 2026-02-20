@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 from datetime import UTC, datetime
 from typing import cast
+from uuid import UUID
 
 import structlog
 from aiogram import Bot
@@ -15,6 +16,9 @@ from structlog.contextvars import bound_contextvars
 from app.api.deps import get_container, get_db_session
 from app.core.container import AppContainer
 from app.core.security import IdempotencyGuard
+from app.repositories.agent_run_trace_repository import AgentRunTraceRepository
+from app.repositories.outbox_repository import OutboxRepository
+from app.repositories.user_repository import UserRepository
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
@@ -85,3 +89,41 @@ async def export_user(
         "generated_at": datetime.now(tz=UTC).isoformat(),
         "data": payload,
     }
+
+
+@router.get("/admin/agent-quality")
+async def agent_quality(
+    days: int = 7,
+    telegram_id: int | None = None,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, object]:
+    user_id: int | None = None
+    if telegram_id is not None:
+        users = UserRepository(session)
+        user = await users.get_by_telegram_id(telegram_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="user not found")
+        user_id = user.id
+    repo = AgentRunTraceRepository(session)
+    metrics = await repo.quality_snapshot(days=days, user_id=user_id)
+    return {"days": days, "telegram_id": telegram_id, "metrics": metrics}
+
+
+@router.post("/admin/outbox/{outbox_id}/requeue")
+async def requeue_outbox(
+    outbox_id: UUID,
+    available_in_seconds: int = 0,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, object]:
+    repo = OutboxRepository(session)
+    item = await repo.get_by_id(outbox_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="outbox item not found")
+    available_at = datetime.now(tz=UTC)
+    if available_in_seconds > 0:
+        from datetime import timedelta
+
+        available_at = available_at + timedelta(seconds=available_in_seconds)
+    await repo.requeue(item, available_at=available_at)
+    await session.commit()
+    return {"status": "ok", "outbox_id": str(outbox_id), "available_at": available_at.isoformat()}

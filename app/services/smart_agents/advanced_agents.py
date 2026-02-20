@@ -339,13 +339,13 @@ class ScheduleOptimizationAgent:
 class ReminderPolicyAgent:
     def apply_default_offsets(self, command: ParsedCommand) -> ParsedCommand:
         if isinstance(command, CreateReminderCommand) and not command.remind_offsets:
-            command.remind_offsets = [1440, 60, 15, 0]
+            command.remind_offsets = [0]
         return command
 
 
 class UserMemoryAgent:
     def build_profile(self, user: User) -> UserMemoryProfile:
-        offsets = user.extra_data_default_offsets() if hasattr(user, "extra_data_default_offsets") else [1440, 60, 15, 0]
+        offsets = user.extra_data_default_offsets() if hasattr(user, "extra_data_default_offsets") else [0]
         return UserMemoryProfile(
             timezone=user.timezone,
             locale=user.language,

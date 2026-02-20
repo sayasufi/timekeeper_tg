@@ -18,6 +18,7 @@ from app.repositories.agent_run_trace_repository import AgentRunTraceRepository
 from app.services.smart_agents import (
     AmbiguityResolverAgent,
     BatchPlanCriticAgent,
+    ChoiceOptionsAgent,
     ClarificationQuestionAgent,
     CommandAgent,
     ContextCompressorAgent,
@@ -72,6 +73,7 @@ class CommandParserService:
         self._execution_supervisor = ExecutionSupervisorAgent(llm_client)
         self._plan_repair = PlanRepairAgent(llm_client)
         self._response_policy = ResponsePolicyAgent(llm_client)
+        self._choice_options = ChoiceOptionsAgent(llm_client)
 
         self._graph = SmartGraphOrchestrator(
             adapter=self._adapter,
@@ -432,6 +434,40 @@ class CommandParserService:
         except Exception:
             logger.exception("parser.response_policy_failed")
             return fallback
+
+    async def suggest_quick_replies(
+        self,
+        *,
+        reply_text: str,
+        locale: str,
+        timezone: str,
+        user_memory: UserMemoryProfile | None = None,
+        context: dict[str, object] | None = None,
+    ) -> list[str]:
+        if not reply_text.strip():
+            return []
+        agent_memory = await self._agent_memory(
+            locale=locale,
+            timezone=timezone,
+            user_memory=user_memory,
+            context=context,
+        )
+        try:
+            decision = await self._choice_options.suggest(
+                reply_text=reply_text,
+                locale=locale,
+                timezone=timezone,
+                user_memory=agent_memory,
+            )
+        except Exception:
+            logger.exception("parser.choice_options_failed")
+            return []
+        if decision.confidence < 0.7:
+            return []
+        options = [item for item in decision.options if item]
+        if len(options) < 2 or len(options) > 3:
+            return []
+        return options
 
     def parse_payload(self, payload: dict[str, object]) -> ParsedCommand:
         return self._adapter.validate_python(payload)

@@ -4,8 +4,10 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import structlog
+from redis.asyncio import Redis
 
 from app.db.models import User
+from app.domain.enums import EventType
 from app.integrations.telegram.base import Notifier
 from app.repositories.due_notification_repository import DueNotificationRepository
 from app.repositories.event_repository import EventRepository
@@ -33,6 +35,11 @@ class ReminderDispatchService:
         event_service: EventService,
         notifier: Notifier,
         response_renderer: BotResponseService | None = None,
+        redis: Redis | None = None,
+        outbox_max_attempts: int = 5,
+        outbox_backoff_base_seconds: int = 30,
+        outbox_backoff_max_seconds: int = 1800,
+        outbox_dedupe_ttl_seconds: int = 86400,
     ) -> None:
         self._users = user_repository
         self._events = event_repository
@@ -41,7 +48,16 @@ class ReminderDispatchService:
         self._logs = log_repository
         self._due_index = due_index_service
         self._event_service = event_service
-        self._delivery = OutboxDeliveryService(outbox_repository, user_repository, notifier)
+        self._delivery = OutboxDeliveryService(
+            outbox_repository,
+            user_repository,
+            notifier,
+            redis=redis,
+            max_attempts=outbox_max_attempts,
+            backoff_base_seconds=outbox_backoff_base_seconds,
+            backoff_max_seconds=outbox_backoff_max_seconds,
+            dedupe_ttl_seconds=outbox_dedupe_ttl_seconds,
+        )
         self._summary = SummaryAgent(DigestPrioritizationAgent())
         self._renderer = response_renderer
 
@@ -67,23 +83,43 @@ class ReminderDispatchService:
                 text = self._format_reminder(user, event.title, item.occurrence_at, item.offset_minutes)
                 text = await self._render_for_user(user, text, response_kind="reminder_notification")
                 dedupe_key = f"{event.id}:{item.occurrence_at.isoformat()}:{item.offset_minutes}"
-                snooze_buttons = [
-                    {
-                        "title": await self._render_button_label(user, "Через 10 мин"),
-                        "callback_data": f"snooze:10:{event.id}",
-                    },
-                    {
-                        "title": await self._render_button_label(user, "Через 30 мин"),
-                        "callback_data": f"snooze:30:{event.id}",
-                    },
-                    {
-                        "title": await self._render_button_label(user, "Через 60 мин"),
-                        "callback_data": f"snooze:60:{event.id}",
-                    },
-                ]
+                if event.event_type == EventType.LESSON.value:
+                    buttons = [
+                        {
+                            "title": await self._render_button_label(user, "Оплачено"),
+                            "callback_data": f"lesson:paid:{event.id}",
+                        },
+                        {
+                            "title": await self._render_button_label(user, "Перенести"),
+                            "callback_data": f"lesson:reschedule:{event.id}",
+                        },
+                        {
+                            "title": await self._render_button_label(user, "Пропуск"),
+                            "callback_data": f"lesson:missed:{event.id}",
+                        },
+                        {
+                            "title": await self._render_button_label(user, "Заметка"),
+                            "callback_data": f"lesson:note:{event.id}",
+                        },
+                    ]
+                else:
+                    buttons = [
+                        {
+                            "title": await self._render_button_label(user, "Через 10 мин"),
+                            "callback_data": f"snooze:10:{event.id}",
+                        },
+                        {
+                            "title": await self._render_button_label(user, "Через 30 мин"),
+                            "callback_data": f"snooze:30:{event.id}",
+                        },
+                        {
+                            "title": await self._render_button_label(user, "Через 60 мин"),
+                            "callback_data": f"snooze:60:{event.id}",
+                        },
+                    ]
                 await self._outbox.enqueue(
                     user_id=user.id,
-                    payload={"telegram_id": user.telegram_id, "text": text, "buttons": snooze_buttons},
+                    payload={"telegram_id": user.telegram_id, "text": text, "buttons": buttons},
                     available_at=now_utc,
                     dedupe_key=dedupe_key,
                 )

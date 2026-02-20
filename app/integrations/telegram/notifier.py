@@ -1,6 +1,8 @@
 ﻿from __future__ import annotations
 
 from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
@@ -12,7 +14,10 @@ class TelegramNotifier:
     @property
     def bot(self) -> Bot:
         if self._bot is None:
-            self._bot = Bot(token=self._bot_token)
+            self._bot = Bot(
+                token=self._bot_token,
+                default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+            )
         return self._bot
 
     async def send_message(
