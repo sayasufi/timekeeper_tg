@@ -1,0 +1,113 @@
+﻿{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TimeKeeper LLM Command Contract",
+  "type": "object",
+  "oneOf": [
+    {
+      "properties": {
+        "intent": { "const": "create_reminder" },
+        "title": { "type": "string", "minLength": 1 },
+        "start_at": { "type": ["string", "null"] },
+        "description": { "type": ["string", "null"] },
+        "timezone": { "type": ["string", "null"] },
+        "rrule": { "type": ["string", "null"] },
+        "remind_offsets": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "required": ["intent", "title"]
+    },
+    {
+      "properties": {
+        "intent": { "const": "update_reminder" },
+        "event_id": { "type": ["string", "null"], "format": "uuid" },
+        "search_text": { "type": ["string", "null"] },
+        "title": { "type": ["string", "null"] },
+        "start_at": { "type": ["string", "null"] },
+        "rrule": { "type": ["string", "null"] },
+        "remind_offsets": {
+          "type": ["array", "null"],
+          "items": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "required": ["intent"]
+    },
+    {
+      "properties": {
+        "intent": { "const": "delete_reminder" },
+        "event_id": { "type": ["string", "null"], "format": "uuid" },
+        "search_text": { "type": ["string", "null"] }
+      },
+      "required": ["intent"]
+    },
+    {
+      "properties": {
+        "intent": { "const": "list_events" },
+        "period": { "enum": ["today", "week", "date", "all"] },
+        "date": { "type": ["string", "null"] }
+      },
+      "required": ["intent"]
+    },
+    {
+      "properties": {
+        "intent": { "const": "create_schedule" },
+        "slots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "weekday": { "enum": ["MO", "TU", "WE", "TH", "FR", "SA", "SU"] },
+              "time": { "type": "string" },
+              "duration_minutes": { "type": "integer", "minimum": 1 },
+              "subject": { "type": "string" },
+              "location": { "type": ["string", "null"] },
+              "remind_offsets": {
+                "type": "array",
+                "items": { "type": "integer", "minimum": 0 }
+              }
+            },
+            "required": ["weekday", "time", "subject"]
+          }
+        }
+      },
+      "required": ["intent", "slots"]
+    },
+    {
+      "properties": {
+        "intent": { "const": "update_schedule" },
+        "event_id": { "type": ["string", "null"], "format": "uuid" },
+        "search_text": { "type": ["string", "null"] },
+        "title": { "type": ["string", "null"] },
+        "weekday": { "enum": ["MO", "TU", "WE", "TH", "FR", "SA", "SU", null] },
+        "time": { "type": ["string", "null"] },
+        "duration_minutes": { "type": ["integer", "null"], "minimum": 1 },
+        "remind_offsets": {
+          "type": ["array", "null"],
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "delete": { "type": "boolean" }
+      },
+      "required": ["intent"]
+    },
+    {
+      "properties": {
+        "intent": { "const": "create_birthday" },
+        "person": { "type": "string", "minLength": 1 },
+        "date": { "type": "string", "minLength": 1 },
+        "remind_offsets": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "required": ["intent", "person", "date"]
+    },
+    {
+      "properties": {
+        "intent": { "const": "clarify" },
+        "question": { "type": "string", "minLength": 1 }
+      },
+      "required": ["intent", "question"]
+    }
+  ]
+}

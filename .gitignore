@@ -1,0 +1,9 @@
+﻿__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.pyc
+.env
+.venv/
+alembic/versions/*.pyc
+exports/*.json
