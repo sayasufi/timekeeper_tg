@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import structlog
 from aiogram import Bot
 from fastapi import FastAPI
 from redis.asyncio import Redis
@@ -16,6 +18,8 @@ from app.db.session import create_engine, create_session_factory
 from app.integrations.llm.client import HTTPLLMClient
 from app.integrations.stt.client import HTTPSTTClient
 from app.integrations.telegram.notifier import TelegramNotifier
+
+logger = structlog.get_logger(__name__)
 
 
 @asynccontextmanager
@@ -47,6 +51,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.container = container
     app.state.bot = bot
     app.state.dispatcher = dispatcher
+    polling_task: asyncio.Task[None] | None = None
 
     if settings.telegram_webhook_url:
         await bot.set_webhook(
@@ -55,10 +60,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             allowed_updates=dispatcher.resolve_used_update_types(),
             drop_pending_updates=False,
         )
+        logger.info("telegram.mode_webhook_enabled", webhook_url=settings.telegram_webhook_url)
+    else:
+        # Ensure webhook is disabled when running in polling mode.
+        await bot.delete_webhook(drop_pending_updates=False)
+        logger.info("telegram.mode_polling_enabled")
+        polling_task = asyncio.create_task(
+            dispatcher.start_polling(
+                bot,
+                allowed_updates=dispatcher.resolve_used_update_types(),
+            )
+        )
 
     try:
         yield
     finally:
+        if polling_task is not None:
+            polling_task.cancel()
+            try:
+                await polling_task
+            except asyncio.CancelledError:
+                pass
         if settings.telegram_webhook_url:
             await bot.delete_webhook(drop_pending_updates=False)
 
