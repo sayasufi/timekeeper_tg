@@ -1,5 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -877,14 +878,38 @@ class AssistantService:
             return response
         if self._response_renderer is None:
             return response
-        await self._maybe_attach_quick_choices(user=user, source_text=source_text, response=response)
 
-        response.text = await self._response_renderer.render_for_user(
-            user=user,
-            raw_text=response.text,
-            response_kind=self._response_kind(response),
-            user_text=source_text,
+        response_kind = self._response_kind(response)
+        can_offer_choices = (
+            source_text is not None
+            and response.ambiguity is None
+            and response.confirmation is None
+            and not response.quick_actions
         )
+        if can_offer_choices:
+            rendered_text, _ = await asyncio.gather(
+                self._response_renderer.render_for_user(
+                    user=user,
+                    raw_text=response.text,
+                    response_kind=response_kind,
+                    user_text=source_text,
+                ),
+                self._maybe_attach_quick_choices(
+                    user=user,
+                    source_text=source_text,
+                    response=response,
+                    response_kind=response_kind,
+                ),
+            )
+            response.text = rendered_text
+        else:
+            response.text = await self._response_renderer.render_for_user(
+                user=user,
+                raw_text=response.text,
+                response_kind=response_kind,
+                user_text=source_text,
+            )
+
         if response.confirmation is not None:
             response.confirmation.summary = await self._response_renderer.render_for_user(
                 user=user,
@@ -893,13 +918,19 @@ class AssistantService:
                 user_text=source_text,
             )
         if response.quick_actions:
-            for item in response.quick_actions:
-                item.label = await self._response_renderer.render_for_user(
-                    user=user,
-                    raw_text=item.label,
-                    response_kind="button_label",
-                    user_text=source_text,
-                )
+            labels = await asyncio.gather(
+                *[
+                    self._response_renderer.render_for_user(
+                        user=user,
+                        raw_text=item.label,
+                        response_kind="button_label",
+                        user_text=source_text,
+                    )
+                    for item in response.quick_actions
+                ],
+            )
+            for item, label in zip(response.quick_actions, labels, strict=False):
+                item.label = label
         return response
 
     async def _maybe_attach_quick_choices(
@@ -908,17 +939,19 @@ class AssistantService:
         user: object,
         source_text: str | None,
         response: AssistantResponse,
+        response_kind: str,
     ) -> None:
         from app.db.models import User
 
         if not isinstance(user, User):
             return
-        if response.ambiguity is not None or response.confirmation is not None or response.quick_actions:
-            return
         memory = self._memory.build_profile(user)
         context: dict[str, object] | None = None
         if source_text:
-            context = {"latest_user_text": source_text}
+            context = {
+                "latest_user_text": source_text,
+                "response_kind": response_kind,
+            }
         options = await self._parser.suggest_quick_replies(
             reply_text=response.text,
             locale=user.language,
@@ -936,7 +969,6 @@ class AssistantService:
             )
             for option in options[:3]
         ]
-
     def _response_kind(self, response: AssistantResponse) -> str:
         if response.ambiguity is not None:
             return "ambiguity_choice"

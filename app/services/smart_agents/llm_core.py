@@ -15,6 +15,7 @@ from app.services.smart_agents.models import (
     ChoiceOptionsDecision,
     ContextCompressionDecision,
     ConversationRouteDecision,
+    ExecutionPathDecision,
     ExecutionSupervisionDecision,
     HelpKnowledgeDecision,
     IntentDecision,
@@ -32,6 +33,7 @@ from app.services.smart_agents.prompts import (
     build_command_prompt,
     build_context_compressor_prompt,
     build_conversation_manager_prompt,
+    build_execution_path_prompt,
     build_execution_supervisor_prompt,
     build_help_knowledge_prompt,
     build_intent_prompt,
@@ -391,6 +393,29 @@ class BatchPlanCriticAgent(BaseLLMAgent):
         )
 
 
+class ExecutionPathAgent(BaseLLMAgent):
+    async def decide(
+        self,
+        *,
+        text: str,
+        operations: list[str],
+        locale: str,
+        timezone: str,
+        user_memory: dict[str, Any] | None = None,
+    ) -> ExecutionPathDecision:
+        prompt = build_execution_path_prompt(
+            text=text,
+            operations=operations,
+            locale=locale,
+            timezone=timezone,
+            user_memory=user_memory,
+        )
+        parsed = self._parse_output(await self._complete(prompt, stage="execution_path"))
+        path_raw = str(parsed.result.get("path", "full")).lower()
+        path = "fast" if path_raw == "fast" else "full"
+        return ExecutionPathDecision(path=path, confidence=parsed.confidence)
+
+
 class ExecutionSupervisorAgent(BaseLLMAgent):
     async def supervise(
         self,
@@ -499,12 +524,14 @@ class ChoiceOptionsAgent(BaseLLMAgent):
         self,
         *,
         reply_text: str,
+        response_kind: str,
         locale: str,
         timezone: str,
         user_memory: dict[str, Any] | None = None,
     ) -> ChoiceOptionsDecision:
         prompt = build_choice_options_prompt(
             reply_text=reply_text,
+            response_kind=response_kind,
             locale=locale,
             timezone=timezone,
             user_memory=user_memory,

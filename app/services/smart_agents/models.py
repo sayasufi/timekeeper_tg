@@ -176,3 +176,9 @@ class TelegramFormatDecision:
 class ChoiceOptionsDecision:
     options: list[str]
     confidence: float
+
+
+@dataclass(slots=True)
+class ExecutionPathDecision:
+    path: str
+    confidence: float

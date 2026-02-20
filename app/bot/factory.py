@@ -1,4 +1,5 @@
-﻿from aiogram import Dispatcher
+from aiogram import Dispatcher
+from aiogram.utils.chat_action import ChatActionMiddleware
 
 from app.bot.handlers import router
 from app.bot.middleware import ContainerMiddleware, DatabaseSessionMiddleware, RateLimitMiddleware
@@ -13,6 +14,7 @@ def create_dispatcher(container: AppContainer) -> Dispatcher:
     dp.update.middleware(ContainerMiddleware(container))
     dp.update.middleware(DatabaseSessionMiddleware(container.session_factory))
     dp.message.middleware(RateLimitMiddleware(flood_control))
+    dp.message.middleware(ChatActionMiddleware())
 
     dp.include_router(router)
     return dp

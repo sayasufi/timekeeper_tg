@@ -1,5 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import asyncio
 import json
 import zlib
 from dataclasses import asdict
@@ -24,6 +25,7 @@ from app.services.smart_agents import (
     ContextCompressorAgent,
     ConversationManagerAgent,
     EntityExtractionAgent,
+    ExecutionPathAgent,
     ExecutionSupervisorAgent,
     FollowUpPlannerAgent,
     HelpKnowledgeAgent,
@@ -68,6 +70,7 @@ class CommandParserService:
         self._primary_assistant = PrimaryAssistantAgent(llm_client)
         self._help_knowledge = HelpKnowledgeAgent(llm_client)
         self._conversation_manager = ConversationManagerAgent(llm_client)
+        self._execution_path = ExecutionPathAgent(llm_client)
         self._context_compressor = ContextCompressorAgent(llm_client)
         self._batch_plan_critic = BatchPlanCriticAgent(llm_client)
         self._execution_supervisor = ExecutionSupervisorAgent(llm_client)
@@ -219,16 +222,31 @@ class CommandParserService:
             user_memory=user_memory,
             context=context,
         )
-        try:
-            route = await self._conversation_manager.route(
+        route_result, pre_path_result = await asyncio.gather(
+            self._conversation_manager.route(
                 text=text,
                 locale=locale,
                 timezone=timezone,
                 user_memory=memory,
-            )
-        except Exception:
-            logger.exception("parser.conversation_manager_failed")
+            ),
+            self._execution_path.decide(
+                text=text,
+                operations=[text],
+                locale=locale,
+                timezone=timezone,
+                user_memory=memory,
+            ),
+            return_exceptions=True,
+        )
+        if isinstance(route_result, Exception):
+            logger.exception("parser.conversation_manager_failed", error=str(route_result))
             return "commands", [text], None, None, "continue_on_error", False
+        route = route_result
+        if isinstance(pre_path_result, Exception):
+            logger.exception("parser.execution_path_failed", error=str(pre_path_result))
+            pre_path = None
+        else:
+            pre_path = pre_path_result
 
         if route.mode == "answer":
             answer = (route.answer or "").strip()
@@ -249,6 +267,28 @@ class CommandParserService:
             return "clarify", [], None, route.question or default_clarify_question(), "continue_on_error", False
 
         operations = route.operations or [text]
+        path_decision = pre_path
+        if len(operations) > 1:
+            try:
+                path_decision = await self._execution_path.decide(
+                    text=text,
+                    operations=operations,
+                    locale=locale,
+                    timezone=timezone,
+                    user_memory=memory,
+                )
+            except Exception:
+                logger.exception("parser.execution_path_failed")
+                path_decision = pre_path
+
+        if (
+            len(operations) == 1
+            and path_decision is not None
+            and path_decision.path == "fast"
+            and path_decision.confidence >= 0.7
+        ):
+            return "commands", operations, None, None, "partial_commit", False
+
         mode, reviewed_ops, question, exec_mode = await self.review_batch_plan(
             text=text,
             operations=operations,
@@ -269,7 +309,6 @@ class CommandParserService:
             context=context,
         )
         return "commands", reviewed_ops, None, None, strategy, stop_on_error
-
     async def repair_operation(
         self,
         text: str,
@@ -452,9 +491,15 @@ class CommandParserService:
             user_memory=user_memory,
             context=context,
         )
+        response_kind = "regular_reply"
+        if isinstance(context, dict):
+            kind_value = context.get("response_kind")
+            if kind_value is not None:
+                response_kind = str(kind_value)
         try:
             decision = await self._choice_options.suggest(
                 reply_text=reply_text,
+                response_kind=response_kind,
                 locale=locale,
                 timezone=timezone,
                 user_memory=agent_memory,
@@ -468,7 +513,6 @@ class CommandParserService:
         if len(options) < 2 or len(options) > 3:
             return []
         return options
-
     def parse_payload(self, payload: dict[str, object]) -> ParsedCommand:
         return self._adapter.validate_python(payload)
 

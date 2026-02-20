@@ -274,6 +274,30 @@ def build_conversation_manager_prompt(
     )
 
 
+def build_execution_path_prompt(
+    *,
+    text: str,
+    operations: list[str],
+    locale: str,
+    timezone: str,
+    user_memory: dict[str, Any] | None = None,
+) -> str:
+    return (
+        f"{_contract_header()} "
+        "Ты ExecutionPathAgent для TimeKeeper. "
+        "Определи, нужен ли полный orchestration-проход или fast-путь. "
+        'Верни result формата: {"path":"fast|full"}.\n'
+        "Правила:\n"
+        "1) fast: одна атомарная операция без зависимостей и без высокого риска.\n"
+        "2) full: мульти-операции, неочевидные зависимости, риск массовых/разрушающих изменений.\n"
+        "3) Если сомневаешься, выбирай full.\n"
+        f"Локаль: {locale}. Таймзона: {timezone}."
+        f"{_memory_block(user_memory)}\n"
+        f"Текст пользователя: {text}\n"
+        f"Операции: {json.dumps(operations, ensure_ascii=False)}"
+    )
+
+
 def build_batch_plan_critic_prompt(
     text: str,
     operations: list[str],
@@ -404,10 +428,13 @@ def build_telegram_format_prompt(
     return (
         f"{_contract_header()} "
         "Ты TelegramFormattingAgent для TimeKeeper. "
-        "Преобразуй текст в Telegram HTML-формат: абзацы, списки, акценты "
-        "(только теги <b>, <i>, <u>, <code>, <pre>, <a>). "
+        "Преобразуй текст в красивый Telegram HTML-формат: чаще делай переносы строк, "
+        "добавляй уместные эмодзи и делай структуру легко читаемой. "
+        "Используй короткие абзацы, списки и акценты. "
+        "(разрешены только теги <b>, <i>, <u>, <a>; теги <code> и <pre> запрещены). "
         "Не меняй факты, даты, суммы, идентификаторы и смысл. "
-        "Если kind=button_label, верни короткий plain-text без HTML-тегов. "
+        "Если kind=button_label, верни короткий plain-text без HTML-тегов и без лишних символов. "
+        "Не делай сплошной текст: визуально разделяй смысловые блоки пустой строкой. "
         'Верни result формата: {"text":"строка"}.\n'
         f"kind={response_kind}. Локаль: {locale}. Таймзона: {timezone}."
         f"{_memory_block(user_memory)}\n"
@@ -418,6 +445,7 @@ def build_telegram_format_prompt(
 def build_choice_options_prompt(
     *,
     reply_text: str,
+    response_kind: str,
     locale: str,
     timezone: str,
     user_memory: dict[str, Any] | None = None,
@@ -433,6 +461,8 @@ def build_choice_options_prompt(
         "1) Варианты должны быть короткими, понятными и отражать только смысл reply_text.\n"
         "2) Не выдумывай новые факты.\n"
         "3) Примеры: ['Да','Нет'], ['Только на этой неделе','Навсегда в расписании'].\n"
+        "4) Для чисто информационных ответов возвращай options=[].\n"
+        f"response_kind={response_kind}.\n"
         f"Локаль: {locale}. Таймзона: {timezone}."
         f"{_memory_block(user_memory)}\n"
         f"reply_text: {reply_text}"
