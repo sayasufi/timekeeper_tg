@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -20,6 +20,7 @@ def parse_datetime_input(value: str, timezone: str, languages: list[str] | None 
     except (ValueError, TypeError):
         pass
 
+    relative_base = datetime.now(tz=ZoneInfo(timezone))
     parsed = dateparser.parse(
         value,
         languages=languages,
@@ -27,6 +28,7 @@ def parse_datetime_input(value: str, timezone: str, languages: list[str] | None 
             "TIMEZONE": timezone,
             "RETURN_AS_TIMEZONE_AWARE": True,
             "PREFER_DATES_FROM": "future",
+            "RELATIVE_BASE": relative_base,
         },
     )
     if parsed is None:

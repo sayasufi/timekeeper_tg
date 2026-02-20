@@ -52,6 +52,13 @@ logger = structlog.get_logger(__name__)
 
 class CommandParserService:
     _MAX_DIALOG_HISTORY_ITEMS = 8
+    _TEMPORAL_CONTEXT_KEYS = (
+        "now_utc_iso",
+        "now_local_iso",
+        "today_local_date",
+        "today_local_weekday_iso",
+        "today_local_weekday",
+    )
 
     def __init__(
         self,
@@ -550,6 +557,11 @@ class CommandParserService:
         if merged is None or context is None:
             return merged
         latest_user_text = normalized_context.get("latest_user_text")
+        temporal_context = {
+            key: normalized_context.get(key)
+            for key in self._TEMPORAL_CONTEXT_KEYS
+            if normalized_context.get(key) is not None
+        }
         try:
             serialized = json.dumps(normalized_context, ensure_ascii=False)
         except Exception:
@@ -557,6 +569,7 @@ class CommandParserService:
         if len(serialized) <= 1200:
             if latest_user_text is not None:
                 merged["latest_user_text"] = latest_user_text
+            merged.update(temporal_context)
             return merged
         context_for_compression = {
             key: value
@@ -585,6 +598,7 @@ class CommandParserService:
         result.pop("context", None)
         if latest_user_text is not None:
             result["latest_user_text"] = latest_user_text
+        result.update(temporal_context)
         return result
 
     def _normalize_context(self, context: dict[str, object] | None) -> dict[str, object] | None:

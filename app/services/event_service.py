@@ -1,5 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -56,6 +57,7 @@ class EventService:
         schedule_optimization_agent: ScheduleOptimizationAgent | None = None,
         redis: Redis | None = None,
         schedule_cache_ttl_seconds: int = 90,
+        compact_context_cache_ttl_seconds: int = 900,
     ) -> None:
         self._events = event_repository
         self._due_index = due_index_service
@@ -66,23 +68,37 @@ class EventService:
         self._optimizer = schedule_optimization_agent or ScheduleOptimizationAgent()
         self._redis = redis
         self._schedule_cache_ttl = max(30, schedule_cache_ttl_seconds)
+        self._compact_context_cache_ttl = max(120, compact_context_cache_ttl_seconds)
 
     async def compact_user_context(self, user: User) -> dict[str, object]:
+        cache_key: str | None = None
+        if self._redis is not None:
+            cache_key = await self._schedule_cache_key(
+                user_id=user.id,
+                period="compact_context",
+                date_value=user.timezone,
+            )
+            cached = await self._cache_get_json(cache_key)
+            if isinstance(cached, dict):
+                return cached
+
         now_utc = datetime.now(tz=UTC)
-        events = await self._events.list_for_user(user.id, only_active=True)
+        events_task = self._events.list_for_user(user.id, only_active=True)
+        students_task = self._students.list_for_user(user.id) if self._students is not None else None
+        if students_task is not None:
+            events, students = await asyncio.gather(events_task, students_task)
+        else:
+            events = await events_task
+            students = []
         lessons = [item for item in events if item.event_type == EventType.LESSON.value]
         upcoming_candidates = [event_next_occurrence(item, now_utc) for item in events]
         upcoming_values = [item for item in upcoming_candidates if item is not None]
         upcoming = min(upcoming_values) if upcoming_values else None
 
-        students_total = 0
-        students_low_balance = 0
-        if self._students is not None:
-            students = await self._students.list_for_user(user.id)
-            students_total = len(students)
-            students_low_balance = sum(1 for item in students if (item.subscription_remaining_lessons or 0) <= 1)
+        students_total = len(students)
+        students_low_balance = sum(1 for item in students if (item.subscription_remaining_lessons or 0) <= 1)
 
-        return {
+        payload = {
             "active_events": len(events),
             "active_lessons": len(lessons),
             "students_total": students_total,
@@ -90,6 +106,9 @@ class EventService:
             "upcoming_at_utc": upcoming.isoformat() if upcoming is not None else None,
             "timezone": user.timezone,
         }
+        if cache_key is not None:
+            await self._cache_set_json(cache_key, payload, ttl_seconds=self._compact_context_cache_ttl)
+        return payload
 
     async def create_reminder(self, user: User, cmd: CreateReminderCommand) -> str:
         if cmd.timezone:
@@ -1378,6 +1397,24 @@ class EventService:
             return
         payload = orjson.dumps({"text": text}).decode("utf-8")
         await self._redis.set(key, payload, ex=self._schedule_cache_ttl)
+
+    async def _cache_get_json(self, key: str) -> dict[str, object] | None:
+        if self._redis is None:
+            return None
+        raw = await self._redis.get(key)
+        if raw is None:
+            return None
+        try:
+            payload = orjson.loads(raw if isinstance(raw, bytes) else str(raw).encode("utf-8"))
+        except orjson.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    async def _cache_set_json(self, key: str, payload: dict[str, object], ttl_seconds: int) -> None:
+        if self._redis is None:
+            return
+        encoded = orjson.dumps(payload).decode("utf-8")
+        await self._redis.set(key, encoded, ex=max(30, ttl_seconds))
 
     def _template_slots(self, template: str) -> list[ScheduleSlotInput]:
         if template == "tutor_week_dense":

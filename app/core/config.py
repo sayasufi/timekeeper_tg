@@ -1,4 +1,4 @@
-﻿from functools import lru_cache
+from functools import lru_cache
 from pathlib import Path
 
 from pydantic import Field
@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     outbox_backoff_max_seconds: int = Field(default=1800, alias="OUTBOX_BACKOFF_MAX_SECONDS")
     outbox_dedupe_ttl_seconds: int = Field(default=86400, alias="OUTBOX_DEDUPE_TTL_SECONDS")
     schedule_cache_ttl_seconds: int = Field(default=90, alias="SCHEDULE_CACHE_TTL_SECONDS")
+    compact_context_cache_ttl_seconds: int = Field(default=900, alias="COMPACT_CONTEXT_CACHE_TTL_SECONDS")
 
     @property
     def telegram_webhook_url(self) -> str:

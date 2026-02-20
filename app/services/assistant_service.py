@@ -76,9 +76,11 @@ class AssistantService:
         self._memory = UserMemoryAgent()
 
     async def handle_text(self, telegram_id: int, text: str, language: str) -> AssistantResponse:
-        user = await self._users.get_or_create(telegram_id=telegram_id, language=language)
+        user, dialog_state = await asyncio.gather(
+            self._users.get_or_create(telegram_id=telegram_id, language=language),
+            self._get_dialog_state(telegram_id),
+        )
         user_memory = self._memory.build_profile(user)
-        dialog_state = await self._get_dialog_state(telegram_id)
         context_package = await self._build_context_package(user=user, state=dialog_state, latest_text=text)
 
         try:
@@ -887,21 +889,18 @@ class AssistantService:
             and not response.quick_actions
         )
         if can_offer_choices:
-            rendered_text, _ = await asyncio.gather(
-                self._response_renderer.render_for_user(
-                    user=user,
-                    raw_text=response.text,
-                    response_kind=response_kind,
-                    user_text=source_text,
-                ),
-                self._maybe_attach_quick_choices(
-                    user=user,
-                    source_text=source_text,
-                    response=response,
-                    response_kind=response_kind,
-                ),
+            response.text = await self._response_renderer.render_for_user(
+                user=user,
+                raw_text=response.text,
+                response_kind=response_kind,
+                user_text=source_text,
             )
-            response.text = rendered_text
+            await self._maybe_attach_quick_choices(
+                user=user,
+                source_text=source_text,
+                response=response,
+                response_kind=response_kind,
+            )
         else:
             response.text = await self._response_renderer.render_for_user(
                 user=user,
@@ -944,6 +943,10 @@ class AssistantService:
         from app.db.models import User
 
         if not isinstance(user, User):
+            return
+        # Clarification questions must stay exact; generated options can drift
+        # and contradict the question text.
+        if response_kind == "clarification_question":
             return
         memory = self._memory.build_profile(user)
         context: dict[str, object] | None = None
@@ -1217,6 +1220,8 @@ class AssistantService:
 
         if not isinstance(user, User):
             return {}
+        now_utc = datetime.now(tz=UTC)
+        local_now = now_utc.astimezone(ZoneInfo(user.timezone))
         try:
             backend_state = await self._events.compact_user_context(user)
         except Exception:
@@ -1231,6 +1236,11 @@ class AssistantService:
             "scenario_expires_at": state.scenario_expires_at,
             "latest_user_text": latest_text,
             "backend_state": backend_state,
+            "now_utc_iso": now_utc.isoformat(),
+            "now_local_iso": local_now.isoformat(),
+            "today_local_date": local_now.strftime("%Y-%m-%d"),
+            "today_local_weekday_iso": local_now.isoweekday(),
+            "today_local_weekday": local_now.strftime("%A"),
         }
 
     def _batch_context(self, *, original_text: str, item_text: str) -> dict[str, object]:

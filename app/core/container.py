@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -52,6 +52,7 @@ class AppContainer:
             payment_repository=payment_repo,
             redis=self.redis,
             schedule_cache_ttl_seconds=self.settings.schedule_cache_ttl_seconds,
+            compact_context_cache_ttl_seconds=self.settings.compact_context_cache_ttl_seconds,
         )
 
     def create_bot_response_service(self) -> BotResponseService:
@@ -98,6 +99,7 @@ class AppContainer:
             payment_repository=payment_repo,
             redis=self.redis,
             schedule_cache_ttl_seconds=self.settings.schedule_cache_ttl_seconds,
+            compact_context_cache_ttl_seconds=self.settings.compact_context_cache_ttl_seconds,
         )
         return ReminderDispatchService(
             user_repository=user_repo,
