@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.db.models import Event
 from app.repositories.due_notification_repository import DueNotificationRepository
-from app.services.occurrence_service import event_next_occurrence
+from app.services.reminders.occurrence_service import event_next_occurrence
 
 
 class DueIndexService:
@@ -54,3 +54,4 @@ class DueIndexService:
 
         next_trigger = next_occurrence - timedelta(minutes=offset_minutes)
         await self._due.mark_pending(item=item, trigger_at=next_trigger, occurrence_at=next_occurrence)
+

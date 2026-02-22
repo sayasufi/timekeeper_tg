@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import cast
 
@@ -7,7 +7,7 @@ import pytest
 from app.db.models import AgentRunTrace
 from app.domain.enums import Intent
 from app.repositories.agent_run_trace_repository import AgentRunTraceRepository
-from app.services.command_parser_service import CommandParserService
+from app.services.parser.command_parser_service import CommandParserService
 
 
 class SequenceLLM:
@@ -300,29 +300,6 @@ async def test_conversation_manager_routes_to_answer() -> None:
 
 
 @pytest.mark.asyncio
-async def test_batch_plan_critic_returns_stop_mode() -> None:
-    parser = CommandParserService(
-        llm_client=SequenceLLM(
-            [
-                '{"result":{"mode":"commands","operations":["сначала измени цену Маше 3000","потом удали ученика Машу"],"question":null,"execution_mode":"stop_on_error"},"confidence":0.86,"needs_clarification":false,"clarify_question":null,"reasons":[]}',
-            ]
-        )
-    )
-
-    mode, ops, question, execution_mode = await parser.review_batch_plan(
-        text="удали Машу и поставь ей цену 3000",
-        operations=["удали Машу", "поставь Маше цену 3000"],
-        locale="ru",
-        timezone="UTC",
-    )
-
-    assert mode == "commands"
-    assert len(ops) == 2
-    assert question is None
-    assert execution_mode == "stop_on_error"
-
-
-@pytest.mark.asyncio
 async def test_execution_supervisor_returns_all_or_nothing() -> None:
     parser = CommandParserService(
         llm_client=SequenceLLM(
@@ -415,3 +392,76 @@ async def test_suggest_quick_replies_ignores_invalid_option_count() -> None:
     )
 
     assert options == []
+
+
+@pytest.mark.asyncio
+async def test_task_chunker_extracts_operations_for_long_text() -> None:
+    parser = CommandParserService(
+        llm_client=SequenceLLM(
+            [
+                '{"result":{"operations":["обнови цену Маше до 3000","перенеси Машу на среду 18:00"]},"confidence":0.9,"needs_clarification":false,"clarify_question":null,"reasons":[]}',
+            ]
+        )
+    )
+
+    operations = await parser._extract_task_operations(
+        text=(
+            "Поставь Маше цену 3000, и еще перенеси ее урок на среду 18:00, "
+            "а дальше покажи мне итог по неделе"
+        ),
+        fallback_operations=["Поставь Маше цену 3000..."],
+        locale="ru",
+        timezone="UTC",
+    )
+
+    assert len(operations) == 2
+    assert operations[0].startswith("обнови цену")
+
+
+@pytest.mark.asyncio
+async def test_task_graph_plans_operation_order() -> None:
+    parser = CommandParserService(
+        llm_client=SequenceLLM(
+            [
+                '{"result":{"operations":["создай ученика Маша","установи Маше цену 3000","добавь урок Маше на пятницу 18:00"],"execution_mode":"stop_on_error"},"confidence":0.92,"needs_clarification":false,"clarify_question":null,"reasons":[]}',
+            ]
+        )
+    )
+
+    operations, execution_mode = await parser.plan_task_graph(
+        text="добавь Машу, цену 3000 и урок на пятницу 18:00",
+        operations=["урок", "цена", "ученик"],
+        locale="ru",
+        timezone="UTC",
+    )
+
+    assert execution_mode == "stop_on_error"
+    assert operations[0] == "создай ученика Маша"
+
+
+@pytest.mark.asyncio
+async def test_route_conversation_uses_task_chunking_and_graph_for_long_request() -> None:
+    parser = CommandParserService(
+        llm_client=SequenceLLM(
+            [
+                '{"result":{"mode":"commands","operations":["черновик"],"answer":null,"question":null},"confidence":0.88,"needs_clarification":false,"clarify_question":null,"reasons":[]}',
+                '{"result":{"operations":["создай ученика Маша","установи Маше цену 3000","добавь урок Маше в среду 18:00"]},"confidence":0.9,"needs_clarification":false,"clarify_question":null,"reasons":[]}',
+                '{"result":{"operations":["создай ученика Маша","установи Маше цену 3000","добавь урок Маше в среду 18:00"],"execution_mode":"stop_on_error"},"confidence":0.9,"needs_clarification":false,"clarify_question":null,"reasons":[]}',
+                '{"result":{"strategy":"all_or_nothing","stop_on_error":true},"confidence":0.9,"needs_clarification":false,"clarify_question":null,"reasons":[]}',
+            ]
+        )
+    )
+
+    mode, ops, _answer, _question, strategy, stop_on_error = await parser.route_conversation(
+        text=(
+            "Добавь ученика Машу, поставь ей цену 3000 и сразу добавь урок "
+            "в среду в 18:00, чтобы все применилось за один раз"
+        ),
+        locale="ru",
+        timezone="UTC",
+    )
+
+    assert mode == "commands"
+    assert len(ops) == 3
+    assert strategy == "all_or_nothing"
+    assert stop_on_error is True

@@ -3,6 +3,28 @@ from __future__ import annotations
 import json
 from typing import Any
 
+__all__ = [
+    "build_bot_reply_prompt",
+    "build_choice_options_prompt",
+    "build_clarify_prompt",
+    "build_command_prompt",
+    "build_context_compressor_prompt",
+    "build_conversation_manager_prompt",
+    "build_execution_supervisor_prompt",
+    "build_help_knowledge_prompt",
+    "build_intent_prompt",
+    "build_plan_repair_prompt",
+    "build_primary_assistant_prompt",
+    "build_recovery_prompt",
+    "build_recurrence_prompt",
+    "build_response_policy_prompt",
+    "build_risk_policy_prompt",
+    "build_task_chunking_prompt",
+    "build_task_graph_prompt",
+    "build_telegram_format_prompt",
+    "default_clarify_question",
+]
+
 
 def _contract_header() -> str:
     return (
@@ -14,7 +36,8 @@ def _contract_header() -> str:
         "Если данных недостаточно или есть неоднозначность, не фантазируй: "
         "верни needs_clarification=true и один конкретный clarify_question. "
         "Все даты/время интерпретируй в timezone пользователя и нормализуй к UTC без исключений. "
-        "Фразы 'сегодня', 'завтра', 'послезавтра' при известной timezone являются однозначными."
+        "Фразы 'сегодня', 'завтра', 'послезавтра' при известной timezone являются однозначными. "
+        "Пиши по-русски, кроме технических значений (intent/enum/RRULE/timezone)."
     )
 
 
@@ -51,7 +74,7 @@ def build_intent_prompt(
         "create_schedule, update_schedule, mark_lesson_paid, mark_lesson_missed, create_student, delete_student, update_student, "
         "student_card, parse_bank_transfer, update_settings, tutor_report, create_birthday, clarify. "
         "result должен быть объектом: {\"intent\": \"...\"}. "
-        "Edge cases:\n"
+        "Сложные случаи:\n"
         "1) 'удали оплату' -> может быть несколько событий, обычно delete_reminder + needs_clarification=true.\n"
         "2) 'перенеси Машу с среды 18:00 на пятницу 19:00 только на этой неделе' -> update_schedule.\n"
         "3) 'отметь оплату у Маши 2500' -> mark_lesson_paid.\n"
@@ -98,7 +121,7 @@ def build_command_prompt(
         "Сформируй строгую команду для backend. "
         "result должен быть JSON-объектом команды, строго соответствующим schema. "
         "Если не хватает полей для валидной команды, не выдумывай: needs_clarification=true. "
-        "Edge cases:\n"
+        "Сложные случаи:\n"
         "1) 'напомни каждый второй вторник до конца мая' -> recurrence с RRULE.\n"
         "2) Для расписания репетитора использовать student_name; subject/format/link не обязательны.\n"
         "3) Для update_schedule поле apply_scope обязательно:\n"
@@ -181,7 +204,7 @@ def build_recurrence_prompt(
         "Извлеки правило повторения. "
         "result формат: {\"rrule\": \"строка| null\", \"until\": \"ISO-UTC | null\"}. "
         "Если повтора нет, rrule=null. "
-        "Edge cases:\n"
+        "Сложные случаи:\n"
         "1) 'каждый второй вторник' -> FREQ=MONTHLY;BYDAY=TU;BYSETPOS=2\n"
         "2) 'по будням' -> FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR\n"
         "3) 'до конца мая' -> until в UTC.\n"
@@ -281,7 +304,31 @@ def build_conversation_manager_prompt(
     )
 
 
-def build_execution_path_prompt(
+def build_task_chunking_prompt(
+    *,
+    text: str,
+    locale: str,
+    timezone: str,
+    user_memory: dict[str, Any] | None = None,
+) -> str:
+    return (
+        f"{_contract_header()} "
+        "Ты TaskChunkingAgent для TimeKeeper. "
+        "Разбей пользовательский запрос на минимальные исполнимые операции по смыслу. "
+        'Верни result формата: {"operations":["..."]}.\n'
+        "Правила:\n"
+        "1) Разделяй только по действиям над данными, а не по знакам пунктуации.\n"
+        "2) Сохраняй формулировки близкими к исходному тексту пользователя.\n"
+        "3) Не добавляй операции, которых нет в запросе.\n"
+        "4) Если действие одно, верни массив из одного элемента.\n"
+        "5) Если это только справочный вопрос, верни пустой массив.\n"
+        f"Локаль: {locale}. Таймзона: {timezone}."
+        f"{_memory_block(user_memory)}\n"
+        f"Текст пользователя: {text}"
+    )
+
+
+def build_task_graph_prompt(
     *,
     text: str,
     operations: list[str],
@@ -291,21 +338,24 @@ def build_execution_path_prompt(
 ) -> str:
     return (
         f"{_contract_header()} "
-        "Ты ExecutionPathAgent для TimeKeeper. "
-        "Определи, нужен ли полный orchestration-проход или fast-путь. "
-        'Верни result формата: {"path":"fast|full"}.\n'
+        "Ты TaskGraphAgent для TimeKeeper. "
+        "Собери финальный исполнимый граф операций для backend: убери дубли, выставь безопасный порядок. "
+        'Верни result формата: {"operations":["..."],"execution_mode":"continue_on_error|stop_on_error"}.\n'
         "Правила:\n"
-        "1) fast: одна атомарная операция без зависимостей и без высокого риска.\n"
-        "2) full: мульти-операции, неочевидные зависимости, риск массовых/разрушающих изменений.\n"
-        "3) Если сомневаешься, выбирай full.\n"
+        "1) Не добавляй новые факты и действия.\n"
+        "2) Если шаги зависят друг от друга, ставь execution_mode=stop_on_error.\n"
+        "3) Если шаги независимы, ставь execution_mode=continue_on_error.\n"
+        "4) Сохраняй максимум исходного смысла, не переформулируй без необходимости.\n"
+        "5) Для длинных сообщений с множеством задач верни полный порядок выполнения.\n"
         f"Локаль: {locale}. Таймзона: {timezone}."
         f"{_memory_block(user_memory)}\n"
         f"Текст пользователя: {text}\n"
-        f"Операции: {json.dumps(operations, ensure_ascii=False)}"
+        f"Черновые операции: {json.dumps(operations, ensure_ascii=False)}"
     )
 
 
-def build_batch_plan_critic_prompt(
+def build_risk_policy_prompt(
+    *,
     text: str,
     operations: list[str],
     locale: str,
@@ -314,17 +364,18 @@ def build_batch_plan_critic_prompt(
 ) -> str:
     return (
         f"{_contract_header()} "
-        "Ты BatchPlanCriticAgent для TimeKeeper. "
-        "Проверь пакет операций целиком: порядок, зависимости, риск и режим исполнения. "
-        'Верни result формата: {"mode":"commands|clarify","operations":["..."],"question":"...|null","execution_mode":"continue_on_error|stop_on_error"}.\n'
+        "Ты RiskPolicyAgent для TimeKeeper. "
+        "Оцени риск плана и сформируй краткий preview изменений для пользователя. "
+        'Верни result формата: {"requires_confirmation":true|false,"risk_level":"low|medium|high","summary":"строка"}.\n'
         "Правила:\n"
-        "1) При валидном плане mode=commands и скорректированный порядок operations.\n"
-        "2) При опасной неоднозначности mode=clarify и один предметный вопрос.\n"
-        "3) execution_mode=continue_on_error для независимых шагов, stop_on_error для зависимых.\n"
-        "4) Не добавляй новые операции, только переупорядочивай/отбрасывай явно дублирующие.\n"
+        "1) high: массовые удаления/массовые сдвиги/необратимые операции.\n"
+        "2) medium: изменение существующих данных без массового эффекта.\n"
+        "3) low: безопасные чтения и точечные безвредные действия.\n"
+        "4) summary должна коротко описывать, что именно изменится.\n"
+        "5) Не выдумывай факты и не меняй смысл операций.\n"
         f"Локаль: {locale}. Таймзона: {timezone}."
         f"{_memory_block(user_memory)}\n"
-        f"Исходный текст: {text}\n"
+        f"Текст пользователя: {text}\n"
         f"Операции: {json.dumps(operations, ensure_ascii=False)}"
     )
 
@@ -414,7 +465,7 @@ def build_context_compressor_prompt(
         "Ты ContextCompressorAgent для TimeKeeper. "
         "Сожми контекст диалога в компактный структурный вид для других агентов. "
         'Верни result формата: {"summary":"строка","facts":["..."]}. '
-        "Rules:\n"
+        "Правила:\n"
         "1) Сохрани только факты, влияющие на выполнение команд.\n"
         "2) Не добавляй домыслы.\n"
         "3) Facts должны быть короткими и проверяемыми.\n"

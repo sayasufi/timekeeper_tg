@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import zlib
 from dataclasses import asdict
@@ -16,16 +15,15 @@ from app.domain.commands import ClarifyCommand, ParsedCommand
 from app.domain.enums import Intent
 from app.integrations.llm.base import LLMClient
 from app.repositories.agent_run_trace_repository import AgentRunTraceRepository
+from app.services.assistant.task_orchestrator_service import TaskOrchestratorService
 from app.services.smart_agents import (
     AmbiguityResolverAgent,
-    BatchPlanCriticAgent,
     ChoiceOptionsAgent,
     ClarificationQuestionAgent,
     CommandAgent,
     ContextCompressorAgent,
     ConversationManagerAgent,
     EntityExtractionAgent,
-    ExecutionPathAgent,
     ExecutionSupervisorAgent,
     FollowUpPlannerAgent,
     HelpKnowledgeAgent,
@@ -40,7 +38,10 @@ from app.services.smart_agents import (
     RecurrenceUnderstandingAgent,
     ReminderPolicyAgent,
     ResponsePolicyAgent,
+    RiskPolicyAgent,
     SmartGraphOrchestrator,
+    TaskChunkingAgent,
+    TaskGraphAgent,
     TimeNormalizationAgent,
 )
 from app.services.smart_agents.llm_core import ClarifyAgent
@@ -77,13 +78,23 @@ class CommandParserService:
         self._primary_assistant = PrimaryAssistantAgent(llm_client)
         self._help_knowledge = HelpKnowledgeAgent(llm_client)
         self._conversation_manager = ConversationManagerAgent(llm_client)
-        self._execution_path = ExecutionPathAgent(llm_client)
         self._context_compressor = ContextCompressorAgent(llm_client)
-        self._batch_plan_critic = BatchPlanCriticAgent(llm_client)
         self._execution_supervisor = ExecutionSupervisorAgent(llm_client)
+        self._task_chunker = TaskChunkingAgent(llm_client)
+        self._task_graph = TaskGraphAgent(llm_client)
+        self._risk_policy = RiskPolicyAgent(llm_client)
         self._plan_repair = PlanRepairAgent(llm_client)
         self._response_policy = ResponsePolicyAgent(llm_client)
         self._choice_options = ChoiceOptionsAgent(llm_client)
+        self._task_orchestrator = TaskOrchestratorService(
+            conversation_manager=self._conversation_manager,
+            task_chunker=self._task_chunker,
+            task_graph=self._task_graph,
+            execution_supervisor=self._execution_supervisor,
+            risk_policy=self._risk_policy,
+            memory_provider=self._agent_memory_for_orchestrator,
+            help_answer_provider=self._help_answer_for_orchestrator,
+        )
 
         self._graph = SmartGraphOrchestrator(
             adapter=self._adapter,
@@ -223,80 +234,44 @@ class CommandParserService:
         user_memory: UserMemoryProfile | None = None,
         context: dict[str, object] | None = None,
     ) -> tuple[str, list[str], str | None, str | None, str, bool]:
-        memory = await self._agent_memory(
+        return await self._task_orchestrator.route_conversation(
+            text=text,
             locale=locale,
             timezone=timezone,
             user_memory=user_memory,
             context=context,
         )
-        route_result, pre_path_result = await asyncio.gather(
-            self._conversation_manager.route(
-                text=text,
-                locale=locale,
-                timezone=timezone,
-                user_memory=memory,
-            ),
-            self._execution_path.decide(
-                text=text,
-                operations=[text],
-                locale=locale,
-                timezone=timezone,
-                user_memory=memory,
-            ),
-            return_exceptions=True,
+
+    async def _extract_task_operations(
+        self,
+        *,
+        text: str,
+        fallback_operations: list[str],
+        locale: str,
+        timezone: str,
+        user_memory: UserMemoryProfile | None = None,
+        context: dict[str, object] | None = None,
+    ) -> list[str]:
+        return await self._task_orchestrator.extract_task_operations(
+            text=text,
+            fallback_operations=fallback_operations,
+            locale=locale,
+            timezone=timezone,
+            user_memory=user_memory,
+            context=context,
         )
-        if isinstance(route_result, Exception):
-            logger.exception("parser.conversation_manager_failed", error=str(route_result))
-            return "commands", [text], None, None, "continue_on_error", False
-        route = route_result
-        if isinstance(pre_path_result, Exception):
-            logger.exception("parser.execution_path_failed", error=str(pre_path_result))
-            pre_path = None
-        else:
-            pre_path = pre_path_result
 
-        if route.mode == "answer":
-            answer = (route.answer or "").strip()
-            if answer and route.confidence >= 0.7:
-                return "answer", [], answer, None, "continue_on_error", False
-            helper_answer = await self.maybe_answer_help(
-                text=text,
-                locale=locale,
-                timezone=timezone,
-                user_memory=user_memory,
-                context=context,
-            )
-            if helper_answer:
-                return "answer", [], helper_answer, None, "continue_on_error", False
-            return "commands", [text], None, None, "continue_on_error", False
-
-        if route.mode == "clarify":
-            return "clarify", [], None, route.question or default_clarify_question(), "continue_on_error", False
-
-        operations = route.operations or [text]
-        path_decision = pre_path
-        if len(operations) > 1:
-            try:
-                path_decision = await self._execution_path.decide(
-                    text=text,
-                    operations=operations,
-                    locale=locale,
-                    timezone=timezone,
-                    user_memory=memory,
-                )
-            except Exception:
-                logger.exception("parser.execution_path_failed")
-                path_decision = pre_path
-
-        if (
-            len(operations) == 1
-            and path_decision is not None
-            and path_decision.path == "fast"
-            and path_decision.confidence >= 0.7
-        ):
-            return "commands", operations, None, None, "partial_commit", False
-
-        mode, reviewed_ops, question, exec_mode = await self.review_batch_plan(
+    async def plan_task_graph(
+        self,
+        *,
+        text: str,
+        operations: list[str],
+        locale: str,
+        timezone: str,
+        user_memory: UserMemoryProfile | None = None,
+        context: dict[str, object] | None = None,
+    ) -> tuple[list[str], str]:
+        return await self._task_orchestrator.plan_task_graph(
             text=text,
             operations=operations,
             locale=locale,
@@ -304,18 +279,46 @@ class CommandParserService:
             user_memory=user_memory,
             context=context,
         )
-        if mode == "clarify":
-            return "clarify", [], None, question or default_clarify_question(), exec_mode, False
-        strategy, stop_on_error = await self.supervise_execution(
+
+    async def assess_plan_risk(
+        self,
+        *,
+        text: str,
+        operations: list[str],
+        locale: str,
+        timezone: str,
+        user_memory: UserMemoryProfile | None = None,
+        context: dict[str, object] | None = None,
+    ) -> tuple[bool, str, str]:
+        return await self._task_orchestrator.assess_plan_risk(
             text=text,
-            operations=reviewed_ops,
-            execution_mode=exec_mode,
+            operations=operations,
             locale=locale,
             timezone=timezone,
             user_memory=user_memory,
             context=context,
         )
-        return "commands", reviewed_ops, None, None, strategy, stop_on_error
+
+    async def supervise_execution(
+        self,
+        text: str,
+        operations: list[str],
+        execution_mode: str,
+        locale: str,
+        timezone: str,
+        user_memory: UserMemoryProfile | None = None,
+        context: dict[str, object] | None = None,
+    ) -> tuple[str, bool]:
+        return await self._task_orchestrator.supervise_execution(
+            text=text,
+            operations=operations,
+            execution_mode=execution_mode,
+            locale=locale,
+            timezone=timezone,
+            user_memory=user_memory,
+            context=context,
+        )
+
     async def repair_operation(
         self,
         text: str,
@@ -382,69 +385,35 @@ class CommandParserService:
             logger.exception("parser.generate_clarification_failed")
             return fallback
 
-    async def review_batch_plan(
+    async def _agent_memory_for_orchestrator(
         self,
-        text: str,
-        operations: list[str],
         locale: str,
         timezone: str,
-        user_memory: UserMemoryProfile | None = None,
-        context: dict[str, object] | None = None,
-    ) -> tuple[str, list[str], str | None, str]:
-        if not operations:
-            return "commands", [], None, "continue_on_error"
-
-        agent_memory = await self._agent_memory(
+        user_memory: UserMemoryProfile | None,
+        context: dict[str, object] | None,
+    ) -> dict[str, object] | None:
+        return await self._agent_memory(
             locale=locale,
             timezone=timezone,
             user_memory=user_memory,
             context=context,
         )
-        try:
-            decision = await self._batch_plan_critic.critique(
-                text=text,
-                operations=operations,
-                locale=locale,
-                timezone=timezone,
-                user_memory=agent_memory,
-            )
-        except Exception:
-            logger.exception("parser.batch_plan_critic_failed")
-            return "commands", operations, None, "continue_on_error"
 
-        if decision.mode == "clarify":
-            return "clarify", [], decision.question or default_clarify_question(), decision.execution_mode
-        return "commands", (decision.operations or operations), None, decision.execution_mode
-
-    async def supervise_execution(
+    async def _help_answer_for_orchestrator(
         self,
         text: str,
-        operations: list[str],
-        execution_mode: str,
         locale: str,
         timezone: str,
-        user_memory: UserMemoryProfile | None = None,
-        context: dict[str, object] | None = None,
-    ) -> tuple[str, bool]:
-        agent_memory = await self._agent_memory(
+        user_memory: UserMemoryProfile | None,
+        context: dict[str, object] | None,
+    ) -> str | None:
+        return await self.maybe_answer_help(
+            text=text,
             locale=locale,
             timezone=timezone,
             user_memory=user_memory,
             context=context,
         )
-        try:
-            decision = await self._execution_supervisor.supervise(
-                text=text,
-                operations=operations,
-                execution_mode=execution_mode,
-                locale=locale,
-                timezone=timezone,
-                user_memory=agent_memory,
-            )
-            return decision.strategy, decision.stop_on_error
-        except Exception:
-            logger.exception("parser.execution_supervisor_failed")
-            return ("partial_commit", execution_mode == "stop_on_error")
 
     async def render_policy_text(
         self,
@@ -529,6 +498,10 @@ class CommandParserService:
         key = f"{user_id}:{text[:12]}".encode()
         bucket = zlib.crc32(key) % 100
         return "fast" if bucket < 20 else "precise"
+
+    @property
+    def task_orchestrator(self) -> TaskOrchestratorService:
+        return self._task_orchestrator
 
     def _memory_with_context(
         self,
@@ -665,5 +638,6 @@ class CommandParserService:
             total_duration_ms=trace.total_duration_ms,
         )
         await self._trace_repository.create(db_trace)
+
 
 

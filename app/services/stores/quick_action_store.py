@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from redis.asyncio import Redis
 
-from app.services.assistant_response import QuickAction
+from app.services.assistant.assistant_response import QuickAction
 
 
 class QuickActionStore:

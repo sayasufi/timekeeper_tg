@@ -1,9 +1,12 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import UTC, datetime
 
 from app.db.models import Event
-from app.services.occurrence_service import event_next_occurrence, event_occurrences_between
+from app.services.reminders.occurrence_service import (
+    event_next_occurrence,
+    event_occurrences_between,
+)
 
 
 def test_occurrences_for_one_time_event() -> None:
@@ -60,3 +63,4 @@ def test_next_occurrence_returns_none_for_past_one_time() -> None:
     nxt = event_next_occurrence(event, datetime(2026, 1, 2, 0, 0, tzinfo=UTC))
 
     assert nxt is None
+

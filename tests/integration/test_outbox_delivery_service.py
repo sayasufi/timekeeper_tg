@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories.outbox_repository import OutboxRepository
 from app.repositories.user_repository import UserRepository
-from app.services.outbox_delivery_service import OutboxDeliveryService
+from app.services.reminders.outbox_delivery_service import OutboxDeliveryService
 
 
 class FlakyNotifier:
@@ -146,3 +146,4 @@ async def test_outbox_redis_dedupe_marks_sent_without_second_send(
     assert updated is not None
     assert updated.status == "sent"
     assert notifier.calls == 0
+

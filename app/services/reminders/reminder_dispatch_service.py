@@ -15,10 +15,10 @@ from app.repositories.event_repository import EventRepository
 from app.repositories.notification_log_repository import NotificationLogRepository
 from app.repositories.outbox_repository import OutboxRepository
 from app.repositories.user_repository import UserRepository
-from app.services.bot_response_service import BotResponseService
-from app.services.due_index_service import DueIndexService
-from app.services.event_service import EventService
-from app.services.outbox_delivery_service import OutboxDeliveryService
+from app.services.assistant.bot_response_service import BotResponseService
+from app.services.events.event_service import EventService
+from app.services.reminders.due_index_service import DueIndexService
+from app.services.reminders.outbox_delivery_service import OutboxDeliveryService
 from app.services.smart_agents import DigestPrioritizationAgent, SummaryAgent
 
 logger = structlog.get_logger(__name__)
@@ -277,3 +277,5 @@ class ReminderDispatchService:
 
     async def _render_button_label(self, user: User, label: str) -> str:
         return await self._render_for_user(user, label, response_kind="button_label")
+
+

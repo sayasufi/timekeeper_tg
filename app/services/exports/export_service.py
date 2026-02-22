@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 import orjson
 
 from app.repositories.user_repository import UserRepository
-from app.services.event_service import EventService
+from app.services.events.event_service import EventService
 
 
 class ExportService:

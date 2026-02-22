@@ -40,8 +40,11 @@ from app.repositories.event_repository import EventRepository
 from app.repositories.note_repository import NoteRepository
 from app.repositories.payment_transaction_repository import PaymentTransactionRepository
 from app.repositories.student_repository import StudentRepository
-from app.services.due_index_service import DueIndexService
-from app.services.occurrence_service import event_next_occurrence, event_occurrences_between
+from app.services.reminders.due_index_service import DueIndexService
+from app.services.reminders.occurrence_service import (
+    event_next_occurrence,
+    event_occurrences_between,
+)
 from app.services.smart_agents import ConflictDetectionAgent, ScheduleOptimizationAgent
 
 
@@ -1431,3 +1434,5 @@ class EventService:
             min_buffer_minutes=min_buffer_minutes,
         )
         return conflict.has_conflict
+
+

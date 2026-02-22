@@ -138,15 +138,6 @@ class ConversationRouteDecision:
 
 
 @dataclass(slots=True)
-class BatchPlanCriticDecision:
-    mode: str
-    operations: list[str]
-    question: str | None
-    execution_mode: str
-    confidence: float
-
-
-@dataclass(slots=True)
 class ExecutionSupervisionDecision:
     strategy: str
     stop_on_error: bool
@@ -179,6 +170,21 @@ class ChoiceOptionsDecision:
 
 
 @dataclass(slots=True)
-class ExecutionPathDecision:
-    path: str
+class RiskPolicyDecision:
+    requires_confirmation: bool
+    risk_level: str
+    summary: str | None
+    confidence: float
+
+
+@dataclass(slots=True)
+class TaskChunkingDecision:
+    operations: list[str]
+    confidence: float
+
+
+@dataclass(slots=True)
+class TaskGraphDecision:
+    operations: list[str]
+    execution_mode: str
     confidence: float

@@ -12,9 +12,9 @@ from app.repositories.event_repository import EventRepository
 from app.repositories.notification_log_repository import NotificationLogRepository
 from app.repositories.outbox_repository import OutboxRepository
 from app.repositories.user_repository import UserRepository
-from app.services.due_index_service import DueIndexService
-from app.services.event_service import EventService
-from app.services.reminder_dispatch_service import ReminderDispatchService
+from app.services.events.event_service import EventService
+from app.services.reminders.due_index_service import DueIndexService
+from app.services.reminders.reminder_dispatch_service import ReminderDispatchService
 
 
 class NotifierProbe(Protocol):
@@ -111,3 +111,4 @@ async def test_dispatch_due_deduplicates_same_window(
     assert second == 0
     assert sent_second == 0
     assert len(fake_notifier.messages) == 1
+

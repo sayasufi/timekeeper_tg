@@ -15,9 +15,9 @@ from app.repositories.notification_log_repository import NotificationLogReposito
 from app.repositories.outbox_repository import OutboxRepository
 from app.repositories.payment_transaction_repository import PaymentTransactionRepository
 from app.repositories.user_repository import UserRepository
-from app.services.due_index_service import DueIndexService
-from app.services.event_service import EventService
-from app.services.reminder_dispatch_service import ReminderDispatchService
+from app.services.events.event_service import EventService
+from app.services.reminders.due_index_service import DueIndexService
+from app.services.reminders.reminder_dispatch_service import ReminderDispatchService
 
 logger = structlog.get_logger(__name__)
 
@@ -115,7 +115,7 @@ async def _deliver_outbox_async() -> int:
         async with session_factory() as session:
             user_repo = UserRepository(session)
             outbox_repo = OutboxRepository(session)
-            from app.services.outbox_delivery_service import OutboxDeliveryService
+            from app.services.reminders.outbox_delivery_service import OutboxDeliveryService
 
             service = OutboxDeliveryService(outbox_repo, user_repo, notifier)
             sent = await service.deliver_ready(now_utc=datetime.now(tz=UTC))
@@ -145,3 +145,4 @@ def deliver_outbox() -> int:
     sent = asyncio.run(_deliver_outbox_async())
     logger.info("task.deliver_outbox", sent=sent)
     return sent
+

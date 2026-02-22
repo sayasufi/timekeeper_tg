@@ -7,15 +7,13 @@ import structlog
 
 from app.domain.enums import Intent
 from app.integrations.llm.base import LLMClient
-from app.services.json_recovery import recover_json_object
+from app.services.parser.json_recovery import recover_json_object
 from app.services.smart_agents.models import (
     AgentOutput,
-    BatchPlanCriticDecision,
     BotReplyDecision,
     ChoiceOptionsDecision,
     ContextCompressionDecision,
     ConversationRouteDecision,
-    ExecutionPathDecision,
     ExecutionSupervisionDecision,
     HelpKnowledgeDecision,
     IntentDecision,
@@ -23,17 +21,18 @@ from app.services.smart_agents.models import (
     PrimaryAssistantDecision,
     RecurrenceDecision,
     ResponsePolicyDecision,
+    RiskPolicyDecision,
+    TaskChunkingDecision,
+    TaskGraphDecision,
     TelegramFormatDecision,
 )
 from app.services.smart_agents.prompts import (
-    build_batch_plan_critic_prompt,
     build_bot_reply_prompt,
     build_choice_options_prompt,
     build_clarify_prompt,
     build_command_prompt,
     build_context_compressor_prompt,
     build_conversation_manager_prompt,
-    build_execution_path_prompt,
     build_execution_supervisor_prompt,
     build_help_knowledge_prompt,
     build_intent_prompt,
@@ -42,6 +41,9 @@ from app.services.smart_agents.prompts import (
     build_recovery_prompt,
     build_recurrence_prompt,
     build_response_policy_prompt,
+    build_risk_policy_prompt,
+    build_task_chunking_prompt,
+    build_task_graph_prompt,
     build_telegram_format_prompt,
     default_clarify_question,
 )
@@ -378,43 +380,31 @@ class ConversationManagerAgent(BaseLLMAgent):
         )
 
 
-class BatchPlanCriticAgent(BaseLLMAgent):
-    async def critique(
+class TaskChunkingAgent(BaseLLMAgent):
+    async def chunk(
         self,
+        *,
         text: str,
-        operations: list[str],
         locale: str,
         timezone: str,
         user_memory: dict[str, Any] | None = None,
-    ) -> BatchPlanCriticDecision:
-        prompt = build_batch_plan_critic_prompt(
+    ) -> TaskChunkingDecision:
+        prompt = build_task_chunking_prompt(
             text=text,
-            operations=operations,
             locale=locale,
             timezone=timezone,
             user_memory=user_memory,
         )
-        parsed = self._parse_output(await self._complete(prompt, stage="batch_plan_critic"))
-        mode_raw = str(parsed.result.get("mode", "commands")).lower()
-        mode = "clarify" if mode_raw == "clarify" else "commands"
+        parsed = self._parse_output(await self._complete(prompt, stage="task_chunking"))
         operations_raw = parsed.result.get("operations")
-        reviewed_ops: list[str] = []
+        operations: list[str] = []
         if isinstance(operations_raw, list):
-            reviewed_ops = [str(item).strip() for item in operations_raw if str(item).strip()]
-        question = str(parsed.result.get("question")) if parsed.result.get("question") is not None else None
-        execution_mode_raw = str(parsed.result.get("execution_mode", "continue_on_error")).lower()
-        execution_mode = execution_mode_raw if execution_mode_raw in {"continue_on_error", "stop_on_error"} else "continue_on_error"
-        return BatchPlanCriticDecision(
-            mode=mode,
-            operations=reviewed_ops,
-            question=question,
-            execution_mode=execution_mode,
-            confidence=parsed.confidence,
-        )
+            operations = [str(item).strip() for item in operations_raw if str(item).strip()]
+        return TaskChunkingDecision(operations=operations, confidence=parsed.confidence)
 
 
-class ExecutionPathAgent(BaseLLMAgent):
-    async def decide(
+class TaskGraphAgent(BaseLLMAgent):
+    async def plan(
         self,
         *,
         text: str,
@@ -422,18 +412,59 @@ class ExecutionPathAgent(BaseLLMAgent):
         locale: str,
         timezone: str,
         user_memory: dict[str, Any] | None = None,
-    ) -> ExecutionPathDecision:
-        prompt = build_execution_path_prompt(
+    ) -> TaskGraphDecision:
+        prompt = build_task_graph_prompt(
             text=text,
             operations=operations,
             locale=locale,
             timezone=timezone,
             user_memory=user_memory,
         )
-        parsed = self._parse_output(await self._complete(prompt, stage="execution_path"))
-        path_raw = str(parsed.result.get("path", "full")).lower()
-        path = "fast" if path_raw == "fast" else "full"
-        return ExecutionPathDecision(path=path, confidence=parsed.confidence)
+        parsed = self._parse_output(await self._complete(prompt, stage="task_graph"))
+        operations_raw = parsed.result.get("operations")
+        planned: list[str] = []
+        if isinstance(operations_raw, list):
+            planned = [str(item).strip() for item in operations_raw if str(item).strip()]
+        execution_mode_raw = str(parsed.result.get("execution_mode", "continue_on_error")).lower()
+        execution_mode = (
+            execution_mode_raw
+            if execution_mode_raw in {"continue_on_error", "stop_on_error"}
+            else "continue_on_error"
+        )
+        return TaskGraphDecision(
+            operations=planned,
+            execution_mode=execution_mode,
+            confidence=parsed.confidence,
+        )
+
+
+class RiskPolicyAgent(BaseLLMAgent):
+    async def assess(
+        self,
+        *,
+        text: str,
+        operations: list[str],
+        locale: str,
+        timezone: str,
+        user_memory: dict[str, Any] | None = None,
+    ) -> RiskPolicyDecision:
+        prompt = build_risk_policy_prompt(
+            text=text,
+            operations=operations,
+            locale=locale,
+            timezone=timezone,
+            user_memory=user_memory,
+        )
+        parsed = self._parse_output(await self._complete(prompt, stage="risk_policy"))
+        risk_raw = str(parsed.result.get("risk_level", "low")).lower()
+        risk_level = risk_raw if risk_raw in {"low", "medium", "high"} else "low"
+        summary = str(parsed.result.get("summary")) if parsed.result.get("summary") is not None else None
+        return RiskPolicyDecision(
+            requires_confirmation=bool(parsed.result.get("requires_confirmation", False)),
+            risk_level=risk_level,
+            summary=summary,
+            confidence=parsed.confidence,
+        )
 
 
 class ExecutionSupervisorAgent(BaseLLMAgent):

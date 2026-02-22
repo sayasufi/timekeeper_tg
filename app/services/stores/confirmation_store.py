@@ -5,51 +5,37 @@ from uuid import UUID, uuid4
 
 from redis.asyncio import Redis
 
-from app.services.assistant_response import AmbiguityOption, AmbiguityRequest
+from app.services.assistant.assistant_response import ConfirmationRequest
 
 
-class AmbiguityStore:
+class ConfirmationStore:
     def __init__(self, redis: Redis, ttl_seconds: int = 600) -> None:
         self._redis = redis
         self._ttl = ttl_seconds
 
-    async def put(self, telegram_id: int, request: AmbiguityRequest) -> str:
+    async def put(self, telegram_id: int, request: ConfirmationRequest) -> str:
         token = uuid4().hex[:12]
         key = self._key(token)
         payload = {
             "telegram_id": telegram_id,
             "action": request.action,
             "command_payload": request.command_payload,
-            "options": [
-                {
-                    "event_id": str(item.event_id),
-                    "title": item.title,
-                    "subtitle": item.subtitle,
-                }
-                for item in request.options
-            ],
+            "event_id": str(request.event_id) if request.event_id is not None else None,
+            "summary": request.summary,
         }
         await self._redis.set(key, json.dumps(payload, ensure_ascii=False), ex=self._ttl)
         return token
 
-    async def get(self, token: str) -> tuple[int, AmbiguityRequest] | None:
-        key = self._key(token)
-        raw = await self._redis.get(key)
+    async def get(self, token: str) -> tuple[int, ConfirmationRequest] | None:
+        raw = await self._redis.get(self._key(token))
         if raw is None:
             return None
-
         payload = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else str(raw))
-        request = AmbiguityRequest(
+        request = ConfirmationRequest(
             action=str(payload["action"]),
             command_payload=dict(payload["command_payload"]),
-            options=[
-                AmbiguityOption(
-                    event_id=UUID(str(item["event_id"])),
-                    title=str(item["title"]),
-                    subtitle=str(item["subtitle"]),
-                )
-                for item in payload["options"]
-            ],
+            event_id=(UUID(str(payload["event_id"])) if payload.get("event_id") is not None else None),
+            summary=str(payload.get("summary", "")),
         )
         return int(payload["telegram_id"]), request
 
@@ -57,4 +43,4 @@ class AmbiguityStore:
         await self._redis.delete(self._key(token))
 
     def _key(self, token: str) -> str:
-        return f"ambiguity:{token}"
+        return f"confirm:{token}"

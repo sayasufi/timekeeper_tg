@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from time import perf_counter
@@ -8,7 +8,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from app.domain.commands import ClarifyCommand, ParsedCommand
 from app.domain.enums import Intent
-from app.services.json_recovery import recover_json_object
+from app.services.parser.json_recovery import recover_json_object
 from app.services.smart_agents.advanced_agents import (
     AmbiguityResolverAgent,
     EntityExtractionAgent,

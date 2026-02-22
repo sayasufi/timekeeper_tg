@@ -4,15 +4,31 @@ from typing import cast
 
 from app.domain.commands import UpdateScheduleCommand
 from app.domain.enums import Intent
-from app.services.assistant_service import AssistantService
+from app.services.assistant.assistant_service import AssistantService
+from app.services.assistant.assistant_use_cases_service import AssistantUseCasesService
+
+
+class _FakeCommandExecution:
+    def needs_schedule_scope_clarification(self, command: UpdateScheduleCommand) -> bool:
+        if command.apply_scope is not None:
+            return False
+        return any(
+            [
+                command.new_date is not None,
+                command.new_time is not None,
+                command.weekday is not None,
+                command.time is not None,
+                command.duration_minutes is not None,
+                command.delete,
+            ]
+        )
 
 
 def _build_service() -> AssistantService:
+    use_cases = cast(AssistantUseCasesService, object())
     return AssistantService(
-        session=cast(object, object()),
-        user_repository=cast(object, object()),
-        parser_service=cast(object, object()),
-        event_service=cast(object, object()),
+        use_cases=use_cases,
+        command_execution=_FakeCommandExecution(),  # type: ignore[arg-type]
     )
 
 
@@ -40,3 +56,4 @@ def test_no_scope_clarification_when_scope_is_explicit() -> None:
     )
 
     assert service._needs_schedule_scope_clarification(command) is False
+

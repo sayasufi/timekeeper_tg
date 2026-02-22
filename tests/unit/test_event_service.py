@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
@@ -26,7 +26,7 @@ from app.repositories.event_repository import EventRepository
 from app.repositories.payment_transaction_repository import PaymentTransactionRepository
 from app.repositories.student_repository import StudentRepository
 from app.repositories.user_repository import UserRepository
-from app.services.event_service import EventService
+from app.services.events.event_service import EventService
 
 
 @pytest.mark.asyncio

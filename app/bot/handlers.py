@@ -23,16 +23,16 @@ from app.repositories.note_repository import NoteRepository
 from app.repositories.payment_transaction_repository import PaymentTransactionRepository
 from app.repositories.student_repository import StudentRepository
 from app.repositories.user_repository import UserRepository
-from app.services.ambiguity_store import AmbiguityStore
-from app.services.assistant_response import AssistantResponse
-from app.services.command_parser_service import CommandParserService
-from app.services.confirmation_store import ConfirmationStore
-from app.services.due_index_service import DueIndexService
-from app.services.event_service import EventService
-from app.services.idempotency_store import IdempotencyStore
-from app.services.pending_action_store import PendingAction, PendingActionStore
-from app.services.quick_action_store import QuickActionStore
+from app.services.assistant.assistant_response import AssistantResponse
+from app.services.events.event_service import EventService
+from app.services.parser.command_parser_service import CommandParserService
+from app.services.reminders.due_index_service import DueIndexService
 from app.services.smart_agents import UserMemoryAgent
+from app.services.stores.ambiguity_store import AmbiguityStore
+from app.services.stores.confirmation_store import ConfirmationStore
+from app.services.stores.idempotency_store import IdempotencyStore
+from app.services.stores.pending_action_store import PendingAction, PendingActionStore
+from app.services.stores.quick_action_store import QuickActionStore
 
 logger = structlog.get_logger(__name__)
 router = Router()
@@ -249,6 +249,7 @@ async def confirm_callback(callback: CallbackQuery, container: AppContainer, ses
         command_payload=request.command_payload,
         event_id=request.event_id,
         confirmed=(action == "yes"),
+        confirmation_action=request.action,
     )
     await store.delete(token)
 
@@ -866,3 +867,5 @@ async def _render_policy_text_for_user(
         fallback=fallback,
         user_memory=user_memory,
     )
+
+
