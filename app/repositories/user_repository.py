@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import User
@@ -38,9 +39,20 @@ class UserRepository:
             timezone=self._default_timezone_for_language(language),
             work_days=[1, 2, 3, 4, 5],
         )
-        self._session.add(user)
-        await self._session.flush()
-        return user, True
+        try:
+            async with self._session.begin_nested():
+                self._session.add(user)
+                await self._session.flush()
+            return user, True
+        except IntegrityError:
+            # Another concurrent handler created this user first.
+            existing = await self.get_by_telegram_id(telegram_id)
+            if existing is None:
+                raise
+            if language and existing.language != language:
+                existing.language = language
+                await self._session.flush()
+            return existing, False
 
     async def list_all(self) -> list[User]:
         stmt = select(User)
