@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
@@ -48,6 +48,13 @@ class BatchExecutionService:
         failed = False
         original_text = "\n".join(operations)
 
+        prepared_commands = await self._preparse_operations(
+            user=user,
+            user_memory=user_memory,
+            original_text=original_text,
+            operations=operations,
+        )
+
         for index, item in enumerate(operations, start=1):
             savepoint = await self._session.begin_nested() if all_or_nothing else None
             response = await self._execute_item(
@@ -55,6 +62,7 @@ class BatchExecutionService:
                 user_memory=user_memory,
                 original_text=original_text,
                 item=item,
+                prepared_command=prepared_commands.get(index - 1),
             )
             if response is None:
                 executed_texts.append(f"{index}. Шаг пропущен.")
@@ -83,8 +91,7 @@ class BatchExecutionService:
 
         if all_or_nothing and failed:
             return AssistantResponse(
-                "Пакет не применен целиком из-за ошибки в одном из шагов.\n"
-                + "\n".join(executed_texts)
+                "Пакет не применен целиком из-за ошибки в одном из шагов.\n" + "\n".join(executed_texts)
             )
         return AssistantResponse("Готово:\n" + "\n".join(executed_texts))
 
@@ -95,6 +102,7 @@ class BatchExecutionService:
         user_memory: object,
         original_text: str,
         item: str,
+        prepared_command: ParsedCommand | None,
     ) -> AssistantResponse | None:
         from app.db.models import User
         from app.services.smart_agents.models import UserMemoryProfile
@@ -105,43 +113,50 @@ class BatchExecutionService:
             return AssistantResponse("Не удалось обработать шаг.")
 
         attempt_text = item
+        prepared = prepared_command
+
         for _attempt in range(2):
             batch_context = self._batch_context(original_text=original_text, item_text=attempt_text)
-            try:
-                command = await self._parser.parse(
-                    text=attempt_text,
-                    locale=user.language,
-                    timezone=user.timezone,
-                    user_id=user.id,
-                    user_memory=user_memory,
-                    context=batch_context,
-                )
-            except Exception as exc:
-                mode, repaired, question = await self._parser.repair_operation(
-                    text=original_text,
-                    failed_operation=attempt_text,
-                    reason=f"parse_error:{exc}",
-                    locale=user.language,
-                    timezone=user.timezone,
-                    user_memory=user_memory,
-                    context=batch_context,
-                )
-                if mode == "skip":
-                    return None
-                if mode == "retry" and repaired:
-                    attempt_text = repaired
-                    continue
-                return AssistantResponse(
-                    question
-                    or await self._ask_clarification(
-                        user=user,
-                        source_text=original_text,
-                        reason=f"Не удалось распарсить шаг операции: {attempt_text}",
-                        fallback="Уточните, пожалуйста, шаг операции.",
+
+            if prepared is not None:
+                command = prepared
+                prepared = None
+            else:
+                try:
+                    command = await self._parser.parse(
+                        text=attempt_text,
+                        locale=user.language,
+                        timezone=user.timezone,
+                        user_id=user.id,
                         user_memory=user_memory,
                         context=batch_context,
                     )
-                )
+                except Exception as exc:
+                    mode, repaired, question = await self._parser.repair_operation(
+                        text=original_text,
+                        failed_operation=attempt_text,
+                        reason=f"parse_error:{exc}",
+                        locale=user.language,
+                        timezone=user.timezone,
+                        user_memory=user_memory,
+                        context=batch_context,
+                    )
+                    if mode == "skip":
+                        return None
+                    if mode == "retry" and repaired:
+                        attempt_text = repaired
+                        continue
+                    return AssistantResponse(
+                        question
+                        or await self._ask_clarification(
+                            user=user,
+                            source_text=original_text,
+                            reason=f"Не удалось распарсить шаг операции: {attempt_text}",
+                            fallback="Уточните, пожалуйста, шаг операции.",
+                            user_memory=user_memory,
+                            context=batch_context,
+                        )
+                    )
 
             if isinstance(command, ClarifyCommand):
                 mode, repaired, question = await self._parser.repair_operation(
@@ -176,11 +191,33 @@ class BatchExecutionService:
             await self._ask_clarification(
                 user=user,
                 source_text=original_text,
-                reason="После повтора шаг операции не удалось распарсить/выполнить.",
+                reason="После повтора шаг операции не удалось распарсить или выполнить.",
                 fallback="Не удалось выполнить шаг операции. Уточните формулировку.",
                 user_memory=user_memory,
                 context=self._batch_context(original_text=original_text, item_text=item),
             )
+        )
+
+    async def _preparse_operations(
+        self,
+        *,
+        user: object,
+        user_memory: object,
+        original_text: str,
+        operations: list[str],
+    ) -> dict[int, ParsedCommand]:
+        from app.services.smart_agents.models import UserMemoryProfile
+
+        if len(operations) < 3:
+            return {}
+        if not isinstance(user_memory, UserMemoryProfile):
+            return {}
+        return await self._parser.parse_batch_operations(
+            operations=operations,
+            locale=user.language,
+            timezone=user.timezone,
+            user_memory=user_memory,
+            context=self._batch_context(original_text=original_text, item_text=original_text),
         )
 
     def _batch_context(self, *, original_text: str, item_text: str) -> dict[str, object]:

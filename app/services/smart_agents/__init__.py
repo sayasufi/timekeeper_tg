@@ -18,6 +18,7 @@ from app.services.smart_agents.advanced_agents import (
     UserMemoryAgent,
 )
 from app.services.smart_agents.llm_core import (
+    BatchCommandAgent,
     BotReplyAgent,
     ChoiceOptionsAgent,
     CommandAgent,
@@ -40,6 +41,7 @@ from app.services.smart_agents.orchestrator import SmartGraphOrchestrator
 
 __all__ = [
     "AmbiguityResolverAgent",
+    "BatchCommandAgent",
     "BotReplyAgent",
     "ChangeImpactAgent",
     "ChoiceOptionsAgent",

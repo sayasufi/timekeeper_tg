@@ -18,6 +18,7 @@ from app.repositories.agent_run_trace_repository import AgentRunTraceRepository
 from app.services.assistant.task_orchestrator_service import TaskOrchestratorService
 from app.services.smart_agents import (
     AmbiguityResolverAgent,
+    BatchCommandAgent,
     ChoiceOptionsAgent,
     ClarificationQuestionAgent,
     CommandAgent,
@@ -71,6 +72,7 @@ class CommandParserService:
 
         base_intent = IntentAgent(llm_client)
         base_command = CommandAgent(llm_client)
+        base_batch_command = BatchCommandAgent(llm_client)
         base_recovery = RecoveryAgent(llm_client)
         base_clarify = ClarifyAgent(llm_client)
         base_recurrence = RecurrenceAgent(llm_client)
@@ -86,6 +88,7 @@ class CommandParserService:
         self._plan_repair = PlanRepairAgent(llm_client)
         self._response_policy = ResponsePolicyAgent(llm_client)
         self._choice_options = ChoiceOptionsAgent(llm_client)
+        self._batch_command = base_batch_command
         self._task_orchestrator = TaskOrchestratorService(
             conversation_manager=self._conversation_manager,
             task_chunker=self._task_chunker,
@@ -171,6 +174,61 @@ class CommandParserService:
                 duration_ms=int((perf_counter() - started) * 1000),
             )
             return result
+
+    async def parse_batch_operations(
+        self,
+        *,
+        operations: list[str],
+        locale: str,
+        timezone: str,
+        user_memory: UserMemoryProfile | None = None,
+        context: dict[str, object] | None = None,
+    ) -> dict[int, ParsedCommand]:
+        if len(operations) < 2:
+            return {}
+        agent_memory = await self._agent_memory(
+            locale=locale,
+            timezone=timezone,
+            user_memory=user_memory,
+            context=context,
+        )
+        schema = self._adapter.json_schema()
+        try:
+            parsed = await self._batch_command.build_batch(
+                operations=operations,
+                locale=locale,
+                timezone=timezone,
+                schema=schema,
+                user_memory=agent_memory,
+            )
+        except Exception:
+            logger.exception("parser.batch_command_failed")
+            return {}
+        commands_raw = parsed.result.get("commands")
+        if not isinstance(commands_raw, list):
+            return {}
+
+        prepared: dict[int, ParsedCommand] = {}
+        for pos, item in enumerate(commands_raw):
+            if not isinstance(item, dict):
+                continue
+            index_raw = item.get("index", pos)
+            try:
+                index = int(index_raw)
+            except (TypeError, ValueError):
+                continue
+            if index < 0 or index >= len(operations):
+                continue
+            payload = item.get("command")
+            if not isinstance(payload, dict):
+                # Допускаем сокращенный формат, когда сам item является командой.
+                payload = item
+            try:
+                command = self._adapter.validate_python(payload)
+            except Exception:
+                continue
+            prepared[index] = command
+        return prepared
 
     def _build_error_stage_trace(self, error_class: str) -> AgentStageTrace:
         return AgentStageTrace(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -56,6 +57,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.container = container
     app.state.bot = bot
     app.state.dispatcher = dispatcher
+    app.state.telegram_update_semaphore = asyncio.Semaphore(16)
+    app.state.telegram_update_tasks = set()
     polling_task: asyncio.Task[None] | None = None
 
     if settings.telegram_webhook_url:
@@ -71,10 +74,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await bot.delete_webhook(drop_pending_updates=False)
         logger.info("telegram.mode_polling_enabled")
         polling_task = asyncio.create_task(
-            dispatcher.start_polling(
-                bot,
-                allowed_updates=dispatcher.resolve_used_update_types(),
-            )
+            dispatcher.start_polling(**_build_polling_kwargs(dispatcher, bot))
         )
 
     try:
@@ -89,6 +89,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if settings.telegram_webhook_url:
             await bot.delete_webhook(drop_pending_updates=False)
 
+        update_tasks: set[asyncio.Task[None]] = app.state.telegram_update_tasks
+        for task in list(update_tasks):
+            task.cancel()
+        if update_tasks:
+            await asyncio.gather(*update_tasks, return_exceptions=True)
+
         await bot.session.close()
         await container.notifier.close()
         await redis.aclose()
@@ -97,3 +103,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="TimeKeeper", lifespan=lifespan)
 app.include_router(api_router)
+
+
+def _build_polling_kwargs(dispatcher: object, bot: Bot) -> dict[str, object]:
+    kwargs: dict[str, object] = {
+        "bot": bot,
+        "allowed_updates": dispatcher.resolve_used_update_types(),  # type: ignore[attr-defined]
+    }
+    signature = inspect.signature(dispatcher.start_polling)  # type: ignore[attr-defined]
+    if "handle_as_tasks" in signature.parameters:
+        kwargs["handle_as_tasks"] = True
+    if "tasks_concurrency_limit" in signature.parameters:
+        kwargs["tasks_concurrency_limit"] = 16
+    return kwargs

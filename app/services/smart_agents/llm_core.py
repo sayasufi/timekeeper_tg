@@ -27,6 +27,7 @@ from app.services.smart_agents.models import (
     TelegramFormatDecision,
 )
 from app.services.smart_agents.prompts import (
+    build_batch_commands_prompt,
     build_bot_reply_prompt,
     build_choice_options_prompt,
     build_clarify_prompt,
@@ -50,7 +51,7 @@ from app.services.smart_agents.prompts import (
 
 logger = structlog.get_logger(__name__)
 
-_AGENT_IO_LOG_CHARS = 1200  # сколько символов логировать с хвоста промпта и начала ответа
+_AGENT_IO_LOG_CHARS = 1200  # max chars to log from prompt tail and response head
 
 
 def _truncate_tail(text: str, max_chars: int) -> str:
@@ -184,6 +185,36 @@ class CommandAgent(BaseLLMAgent):
                 needs_clarification=False,
                 clarify_question=None,
                 reasons=["command_json_invalid"],
+            )
+
+
+class BatchCommandAgent(BaseLLMAgent):
+    async def build_batch(
+        self,
+        *,
+        operations: list[str],
+        locale: str,
+        timezone: str,
+        schema: dict[str, Any],
+        user_memory: dict[str, Any] | None = None,
+    ) -> AgentOutput:
+        prompt = build_batch_commands_prompt(
+            operations=operations,
+            locale=locale,
+            timezone=timezone,
+            schema=schema,
+            user_memory=user_memory,
+        )
+        raw = await self._complete(prompt, stage="batch_command")
+        try:
+            return self._parse_output(raw)
+        except Exception:
+            return AgentOutput(
+                result={"commands": []},
+                confidence=0.1,
+                needs_clarification=False,
+                clarify_question=None,
+                reasons=["batch_command_json_invalid"],
             )
 
 

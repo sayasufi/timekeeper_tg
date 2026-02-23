@@ -147,7 +147,11 @@ class InteractionHandlersService:
             payload=payload,
         )
         if outcome.delegate_text is not None:
-            return await self._handle_text(telegram_id, outcome.delegate_text, language)
+            return await self._handle_text(
+                telegram_id=telegram_id,
+                text=outcome.delegate_text,
+                language=language,
+            )
         if outcome.should_commit:
             await self._session.commit()
         return await self._finalize_response(user, None, outcome.response)

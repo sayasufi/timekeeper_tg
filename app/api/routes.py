@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 import structlog
@@ -67,7 +68,13 @@ async def telegram_webhook(
 
     with bound_contextvars(tg_update_id=update.update_id):
         logger.info("webhook.telegram_update_received")
-        await request.app.state.dispatcher.feed_update(bot, update)
+        task = asyncio.create_task(_process_telegram_update(request.app, bot, update))
+        tasks = getattr(request.app.state, "telegram_update_tasks", None)
+        if tasks is None:
+            tasks = set()
+            request.app.state.telegram_update_tasks = tasks
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
     return {"status": "ok"}
 
 
@@ -127,3 +134,15 @@ async def requeue_outbox(
     await repo.requeue(item, available_at=available_at)
     await session.commit()
     return {"status": "ok", "outbox_id": str(outbox_id), "available_at": available_at.isoformat()}
+
+
+async def _process_telegram_update(app: Any, bot: Bot, update: Update) -> None:
+    semaphore = getattr(app.state, "telegram_update_semaphore", None)
+    try:
+        if semaphore is None:
+            await app.state.dispatcher.feed_update(bot, update)
+            return
+        async with semaphore:
+            await app.state.dispatcher.feed_update(bot, update)
+    except Exception as exc:
+        logger.exception("webhook.telegram_update_failed", update_id=update.update_id, error=str(exc))

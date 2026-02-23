@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 __all__ = [
+    "build_batch_commands_prompt",
     "build_bot_reply_prompt",
     "build_choice_options_prompt",
     "build_clarify_prompt",
@@ -152,6 +153,30 @@ def build_command_prompt(
         f"{_memory_block(user_memory)}\n"
         f"Schema: {json.dumps(schema, ensure_ascii=False)}\n"
         f"Текст пользователя: {text}"
+    )
+
+
+def build_batch_commands_prompt(
+    *,
+    operations: list[str],
+    locale: str,
+    timezone: str,
+    schema: dict[str, Any],
+    user_memory: dict[str, Any] | None = None,
+) -> str:
+    return (
+        f"{_contract_header()} "
+        "Ты BatchCommandAgent для TimeKeeper. "
+        "Построй команды backend сразу для всего списка операций за один проход. "
+        "Верни result формата: "
+        '{"commands":[{"index":0,"command":{...}}]}. '
+        "index — индекс операции из входного списка. command — валидный объект команды по schema. "
+        "Не пропускай операции без причины. Если по операции не хватает данных, верни command с intent=clarify и точным вопросом. "
+        "Не добавляй новых операций и не меняй их порядок по смыслу. "
+        f"Локаль: {locale}. Таймзона: {timezone}."
+        f"{_memory_block(user_memory)}\n"
+        f"Schema: {json.dumps(schema, ensure_ascii=False)}\n"
+        f"Операции: {json.dumps(operations, ensure_ascii=False)}"
     )
 
 
