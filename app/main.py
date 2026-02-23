@@ -74,7 +74,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await bot.delete_webhook(drop_pending_updates=False)
         logger.info("telegram.mode_polling_enabled")
         polling_task = asyncio.create_task(
-            dispatcher.start_polling(**_build_polling_kwargs(dispatcher, bot))
+            dispatcher.start_polling(bot, **_build_polling_kwargs(dispatcher, bot))
         )
 
     try:
@@ -107,7 +107,6 @@ app.include_router(api_router)
 
 def _build_polling_kwargs(dispatcher: object, bot: Bot) -> dict[str, object]:
     kwargs: dict[str, object] = {
-        "bot": bot,
         "allowed_updates": dispatcher.resolve_used_update_types(),  # type: ignore[attr-defined]
     }
     signature = inspect.signature(dispatcher.start_polling)  # type: ignore[attr-defined]

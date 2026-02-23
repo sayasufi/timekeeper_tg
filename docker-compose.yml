@@ -1,12 +1,14 @@
-﻿version: "3.9"
+version: "3.9"
 
 services:
   postgres:
     image: postgres:16
+    env_file:
+      - .env
     environment:
-      POSTGRES_DB: timekeeper
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-timekeeper}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
       - "5432:5432"
     volumes:
@@ -21,7 +23,7 @@ services:
     build: .
     env_file:
       - .env
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: sh -c "until alembic upgrade head; do echo 'Waiting for PostgreSQL...'; sleep 2; done; uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     ports:
       - "8000:8000"
     volumes:
@@ -40,6 +42,7 @@ services:
     depends_on:
       - postgres
       - redis
+      - api
 
   beat:
     build: .
@@ -51,6 +54,7 @@ services:
     depends_on:
       - postgres
       - redis
+      - api
 
 volumes:
   pgdata:
